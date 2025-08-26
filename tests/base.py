@@ -211,7 +211,6 @@ class LayerTestBase:
         from da4ml.trace import comb_trace
 
         inp, out = trace_model(model)
-        inp, out = np.concatenate(inp, axis=0), np.concatenate(out, axis=0)  # type: ignore
         comb = comb_trace(inp, out)
         verilog_model = VerilogModel(comb, 'test', f'{temp_directory}/verilog_proj', 5)
         hls_model = HLSModel(comb, 'test', f'{temp_directory}/hls_proj')
