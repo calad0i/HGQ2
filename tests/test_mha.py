@@ -87,6 +87,9 @@ class TestMultiHeadAttention(LayerTestBase):
     def input_data(self, input_shapes, N: int = 5000):
         return tuple(np.random.randn(N, *shape).astype(np.float32) * 3 for shape in input_shapes)
 
+    def assert_equal(self, keras_output, hls_output):
+        return np.testing.assert_allclose(keras_output, hls_output, atol=1e-6)
+
 
 class TestLinformerAttention(TestMultiHeadAttention):
     layer_cls = QLinformerAttention

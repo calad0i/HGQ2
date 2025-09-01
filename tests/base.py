@@ -250,12 +250,13 @@ class LayerTestBase:
 
         initial_weights_np = [w.numpy() for w in model.trainable_variables]
 
-        opt = keras.optimizers.Lion(learning_rate=1.0)
+        opt = keras.optimizers.SGD()
         loss = keras.losses.MeanAbsoluteError()
         model(input_data, training=True)  # Adapt init bitwidth
 
         data_len = len(input_data[0]) if isinstance(input_data, Sequence) else len(input_data)
-        labels = ops.array(np.random.rand(data_len), dtype='float32')
+        shape = (data_len, *model.output.shape[1:])  # type: ignore
+        labels = ops.array(np.random.rand(*shape), dtype='float32')
         model_wrap.compile(optimizer=opt, loss=loss)  # type: ignore
         model_wrap.train_on_batch(input_data, labels)
 
@@ -265,13 +266,11 @@ class LayerTestBase:
         for w0, w1 in zip(initial_weights_np, trained_weights):
             if w1.name in 'bif':
                 continue
-            if np.prod(w1.shape) < 10 and overflow_mode == 'SAT':
+            if np.prod(w1.shape) < 10 and 'SAT' in overflow_mode:
                 # Overflowing weight doesn't receive grad in SAT mode
                 # Chance of all overflow is high for small-sized weights, skip them
                 continue
             if np.array_equal(w0, w1.numpy()):
-                # if w1.path == 'q_multi_head_attention/key/bias':
-                #     continue
                 boom.append(f'{w1.path}')
         assert not boom, f'Weight {" AND ".join(boom)} did not change'
         assert any(np.any(w0 != w1.numpy()) for w0, w1 in zip(initial_weights_np, trained_weights) if w1.name in 'bif')

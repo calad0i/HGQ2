@@ -1,3 +1,4 @@
+import keras
 import numpy as np
 import pytest
 from keras import ops
@@ -47,8 +48,7 @@ class TestBatchNorm(LayerTestBase):
         hgq_output = bn(input_data, training=True)
         hgq_output_test = bn(input_data, training=False)
         mean, var = ops.moments(input_data, axes=layer_kwargs['axis'], keepdims=True)  # type: ignore
-        ref_output = (input_data - mean) / ops.sqrt(var + bn.epsilon)
-        # ref_output = ref_output * bn.bn_gamma + bn.bn_beta
+        ref_output = (input_data - mean) / ops.sqrt(var + bn.epsilon)  # type: ignore
 
         hgq_output_np: np.ndarray = ops.convert_to_numpy(hgq_output)  # type: ignore
         ref_output_np: np.ndarray = ops.convert_to_numpy(ref_output)  # type: ignore
@@ -56,3 +56,11 @@ class TestBatchNorm(LayerTestBase):
 
         np.allclose(hgq_output_np, ref_output_np, atol=1e-6)
         np.allclose(hgq_output_test_np, ref_output_np)
+
+    def test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, temp_directory: str):
+        super()._test_da4ml_conversion(
+            model=model,
+            input_data=input_data,
+            overflow_mode=overflow_mode,
+            temp_directory=temp_directory,
+        )
