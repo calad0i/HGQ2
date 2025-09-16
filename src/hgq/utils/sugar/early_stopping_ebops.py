@@ -66,13 +66,13 @@ class EarlyStoppingWithEbopsThres(EarlyStopping):
         self,
         ebops_threshold: float,
         monitor='val_loss',
-        min_delta=0,
-        patience=0,
-        verbose=0,
+        min_delta: float = 0,
+        patience: int = 0,
+        verbose: int = 0,
         mode='auto',
-        baseline=None,
-        restore_best_weights=False,
-        start_from_epoch=0,
+        baseline: float | None = None,
+        restore_best_weights: bool = False,
+        start_from_epoch: int = 0,
     ):
         self.ebops_threshold = ebops_threshold
         kwargs = gather_vars_to_kwargs('self|ebops_threshold')
