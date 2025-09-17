@@ -75,5 +75,5 @@ class Dataset(PyDataset):
             else:
                 batch_y = tuple(y[low:high] for y in self.y)  # type: ignore
         else:
-            batch_y = None
+            batch_y = float('nan')
         return batch_x, batch_y
