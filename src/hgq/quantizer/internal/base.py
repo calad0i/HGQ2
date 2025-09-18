@@ -80,7 +80,7 @@ class TrainableQuantizerBase(Layer):
             heterogeneous_axis, homogeneous_axis
         )
         self.bw_mapper = bw_mapper
-        self._seed = kwargs.pop('seed', int(np.random.randint(0, 2**32)))
+        self._seed = kwargs.pop('seed', int(np.random.randint(0, 2**31)))
         super().__init__(**kwargs)
         self.supports_masking = True
 
