@@ -23,7 +23,7 @@ classifiers = [
 ]
 dynamic = [ "version" ]
 
-dependencies = [ "keras>=3.10", "quantizers>=1.2.2", "tqdm" ]
+dependencies = [ "keras>=3.11", "quantizers>=1.2.2", "tqdm" ]
 optional-dependencies.docs = [ "myst-parser", "pyparsing", "sphinx", "sphinx-rtd-theme" ]
 optional-dependencies.test = [
   "da4ml>=0.3",
