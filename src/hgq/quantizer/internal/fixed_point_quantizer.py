@@ -269,16 +269,17 @@ class FixedPointQuantizerKBI(FixedPointQuantizerBase):
             stochastic = self.stateless_quantizer.stochastic and training is True
             if training or training == 'tracing':  # noqa: E712, training maybe a special wrapper object
                 new_i = self.get_minimal_i(inputs)
-                if self._i.constraint is not None:
-                    new_i = self._i.constraint(new_i)
                 if training:
                     new_i = ops.stop_gradient(ops.maximum((self.i - self.i_decay_speed), new_i))  # type: ignore
+                    if self._i.constraint is not None:
+                        new_i = self._i.constraint(new_i)
                     self._i.assign(new_i)
-
                     f = self.bw_mapper.bw_to_x(self.f, ops.shape(inputs))
                     return self.stateless_quantizer.round(inputs, f, stochastic, self.seed_gen)
                 else:
                     new_i = ops.stop_gradient(ops.maximum(self.i, new_i))  # type: ignore
+                    if self._i.constraint is not None:
+                        new_i = self._i.constraint(new_i)
 
                     f = self.bw_mapper.bw_to_x(self.b - new_i, ops.shape(inputs))  # type: ignore
                     rinputs = self.stateless_quantizer.round(inputs, f, stochastic, self.seed_gen)
@@ -395,14 +396,15 @@ class FixedPointQuantizerKIF(FixedPointQuantizerBase):
 
             if training or training == 'tracing':  # noqa: E712, training maybe a special wrapper object
                 _new_i = self.get_minimal_i(rinputs)
-                # Enforce constraints on i in case i is not trainable (WRAP mode)
-                if self._i.constraint is not None:
-                    _new_i = self._i.constraint(_new_i)
                 if training:
                     new_i = ops.stop_gradient(ops.maximum((self.i - self.i_decay_speed), _new_i))  # type: ignore
+                    if self._i.constraint is not None:
+                        _new_i = self._i.constraint(_new_i)
                     self._i.assign(new_i)
                 else:
                     # tracing
+                    if self._i.constraint is not None:
+                        _new_i = self._i.constraint(_new_i)
                     new_i = ops.stop_gradient(ops.maximum(self.i, _new_i))  # type: ignore
                     new_k = self.get_any_k(rinputs)
                     new_k = ops.cast(ops.cast(self.k, 'bool') | new_k, self._k.dtype)  # type: ignore
