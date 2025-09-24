@@ -63,6 +63,8 @@ class Dataset(PyDataset):
         self.batch_size = batch_size
 
     def __getitem__(self, idx):
+        if idx < 0:
+            idx = idx % len(self)
         low = idx * self.batch_size
         high = min(low + self.batch_size, self.data_len)
         if self.n_inp == 1:
