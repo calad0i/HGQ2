@@ -14,10 +14,7 @@ The following are the recommended versions for each backend:
 
 You'll need to have at least one of these backends installed in your environment to train models with HGQ2.
 
-## Basic Installation
-
-HGQ2 is not yet available on PyPI, so you'll need to install it from the GitHub repository.
-Install HGQ2 directly from the repository:
+## Installation
 
 ```bash
 # For development (editable installation)
@@ -27,6 +24,13 @@ pip install -e .
 
 # For regular installation
 pip install HGQ2
+```
+
+Consider install also `da4ml` or/and `hls4ml` for model conversion and synthesis:
+
+```bash
+pip install da4ml>=0.3
+pip install hls4ml>=1.2.0
 ```
 
 ## Troubleshooting
