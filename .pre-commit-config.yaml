@@ -2,19 +2,19 @@ exclude: '\.svg$|ap_types/|_version.py'
 
 repos:
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.11.5
+  rev: v0.13.3
   hooks:
     - id: ruff
       args: [--fix]
     - id: ruff-format
 
 - repo: https://github.com/tox-dev/pyproject-fmt
-  rev: v2.5.1
+  rev: v2.7.0
   hooks:
     - id: pyproject-fmt
 
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v5.0.0
+  rev: v6.0.0
   hooks:
   - id: check-added-large-files
   - id: check-case-conflict
@@ -29,13 +29,13 @@ repos:
   - id: trailing-whitespace
 
 - repo: https://github.com/asottile/pyupgrade
-  rev: v3.19.1
+  rev: v3.20.0
   hooks:
   - id: pyupgrade
     args: ["--py310-plus"]
 
 - repo: https://github.com/pre-commit/mirrors-clang-format
-  rev: v20.1.0
+  rev: v21.1.2
   hooks:
   - id: clang-format
     types_or: [c++, c, cuda]
