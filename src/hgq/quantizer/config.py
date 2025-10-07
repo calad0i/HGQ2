@@ -6,7 +6,7 @@ from keras.initializers import Initializer
 from keras.regularizers import Regularizer
 from keras.saving import deserialize_keras_object, register_keras_serializable
 
-from ..constraints import Min, MinMax
+from ..constraints import Constant, Min, MinMax
 from ..regularizers import MonoL1
 from ..utils.misc import numbers
 from .internal import (
@@ -219,7 +219,13 @@ default_configs: dict[tuple[str, str], KIFConfig | KBIConfig | FloatConfig] = {
     ('float', 'datalane'): float_datalane_default,
 }
 
-all_quantizer_keys = {k for v in default_configs.values() for k in v.keys()} | {'q_type', 'place', 'scaler', 'qnoise_factor'}
+all_quantizer_keys = {k for v in default_configs.values() for k in v.keys()} | {
+    'q_type',
+    'place',
+    'scaler',
+    'affine',
+    'qnoise_factor',
+}
 
 
 def all_quantizer_types():
@@ -238,11 +244,11 @@ class QuantizerConfig(Mapping):
         q_type: str = 'kbi',
         place: str = 'datalane',
         *,
-        k0: numbers | bool | Initializer = True,
-        b0: numbers | Initializer = 4,
-        i0: numbers | Initializer = 2,
-        round_mode: str = 'RND',
-        overflow_mode: str = 'WRAP',
+        k0: numbers | bool | Initializer | None = True,
+        b0: numbers | Initializer | None = 4,
+        i0: numbers | Initializer | None = 2,
+        round_mode: str | None = 'RND',
+        overflow_mode: str | None = 'WRAP',
         bc: Constraint | None = MinMax(0, 12),
         ic: Constraint | None = None,
         br: Regularizer | None = None,
@@ -252,6 +258,7 @@ class QuantizerConfig(Mapping):
         heterogeneous_axis: Sequence[int] | None = None,
         bw_mapper: BitwidthMapperBase | None = None,
         scaler: numbers | None = None,
+        affine: tuple[numbers, numbers] | None = None,
         qnoise_factor: float | None = None,
         **kwargs,
     ) -> None:
@@ -291,6 +298,8 @@ class QuantizerConfig(Mapping):
             The bitwidth mapper to be used. Must be a subclass of `BitwidthMapperBase`. If None, the default bitwidth mapper is used with `homogeneous_axis` and `heterogeneous_axis` as arguments, by default None
         scaler : numbers | None, optional
             The scaling factor to be used. If None, no scaling is applied, by default None
+        affine : tuple[numbers, numbers] | None, optional
+            Post-quantization affine transformation (scale, shift). If None, no affine transformation is applied, by default None
         qnoise_factor : float | None, optional
             The fraction of quantization strength. If None, treat as full quantization noise, by default None
         """
@@ -305,8 +314,8 @@ class QuantizerConfig(Mapping):
         k0: numbers | bool | Initializer = True,
         i0: numbers | Initializer = 4,
         f0: numbers | Initializer = 2,
-        round_mode: str = 'RND',
-        overflow_mode: str = 'WRAP',
+        round_mode: str | None = 'RND',
+        overflow_mode: str | None = 'WRAP',
         ic: Constraint | None = MinMax(-12, 12),
         ir: Regularizer | None = None,
         fc: Constraint | None = MinMax(-10, 10),
@@ -355,6 +364,8 @@ class QuantizerConfig(Mapping):
             The bitwidth mapper to be used. Must be a subclass of `BitwidthMapperBase`. If None, the default bitwidth mapper is used with `homogeneous_axis` and `heterogeneous_axis` as arguments, by default None
         scaler : numbers | None, optional
             The scaling factor to be used. If None, no scaling is applied, by default None
+        affine : tuple[numbers, numbers] | None, optional
+            Post-quantization affine transformation (scale, shift). If None, no affine transformation is applied, by default None
         qnoise_factor : float | None, optional
             The fraction of quantization strength. If None, treat as full quantization noise, by default None
         """
@@ -366,9 +377,9 @@ class QuantizerConfig(Mapping):
         q_type: str = 'float',
         place: str = 'datalane',
         *,
-        m0: numbers | Initializer = 2,
-        e0: numbers | Initializer = 1,
-        e00: numbers | Initializer = 0,
+        m0: numbers | Initializer | None = 2,
+        e0: numbers | Initializer | None = 1,
+        e00: numbers | Initializer | None = 0,
         mc: Constraint | None = Min(-1),
         ec: Constraint | None = MinMax(0, 4),
         e0c: Constraint | None = MinMax(-8, 8),
@@ -416,6 +427,8 @@ class QuantizerConfig(Mapping):
             The bitwidth mapper to be used. Must be a subclass of `BitwidthMapperBase`. If None, the default bitwidth mapper is used with `homogeneous_axis` and `heterogeneous_axis` as arguments, by default None
         scaler : numbers | None, optional
             The scaling factor to be used. If None, no scaling is applied, by default None
+        affine : tuple[numbers, numbers] | None, optional
+            Post-quantization affine transformation (scale, shift). If None, no affine transformation is applied, by default None
         qnoise_factor : float | None, optional
             The fraction of quantization strength. If None, treat as full quantization noise, by default None
         """
@@ -426,6 +439,7 @@ class QuantizerConfig(Mapping):
         q_type: str = 'default',
         place: str = 'datalane',
         scaler: numbers | None = None,
+        affine: tuple[numbers, numbers] | None = None,
         qnoise_factor: float | None = None,
         **kwargs,
     ) -> None:
@@ -441,6 +455,8 @@ class QuantizerConfig(Mapping):
             The scaling factor to be used. If None, no scaling is applied, by default None
         qnoise_factor : float | None, optional
             The fraction of quantization strength. If None, treat as full quantization noise, by default None
+        affine : tuple[numbers, numbers] | None, optional
+            Post-quantization affine transformation (scale, shift). If None, no affine transformation is applied, by default None
 
         **kwargs : Specific parameters for different quantizer types.
         """
@@ -456,9 +472,14 @@ class QuantizerConfig(Mapping):
 
         self.scaler = None
         self.qnoise_factor = None
+        self.affine = None
         if scaler is not None:
             assert scaler != 0, 'scaler must not be 0.'
             self.scaler = float(scaler)
+        if affine is not None:
+            assert len(affine) == 2, 'affine must be a tuple of (scale, shift).'
+            assert affine[0] != 0, 'affine scale must not be 0.'
+            self.affine = (float(affine[0]), float(affine[1]))
         if qnoise_factor is not None:
             assert 0 <= qnoise_factor <= 1, 'qnoise_factor must be between 0 and 1.'
             self.qnoise_factor = float(qnoise_factor) if qnoise_factor is not None else None
@@ -504,6 +525,7 @@ class QuantizerConfig(Mapping):
             'place': self.place,
             'scaler': self.scaler,
             'qnoise_factor': self.qnoise_factor,
+            'affine': self.affine,
             **self.config,
         }
 
@@ -614,3 +636,81 @@ class QuantizerConfigScope:
         """Override the default quantizer config."""
         self.__enter__()
         self._tmp_storage.clear()
+
+
+@register_keras_serializable(package='hgq')
+class HardTanhConfig(QuantizerConfig):
+    """Grammar sugar for hard tanh quantizer config.
+    Equivalent to QuantizerConfig with q_type='kif', k0=1, ic=Constant(0).
+    """
+
+    def __init__(
+        self,
+        q_type: str = 'kif',
+        place: str = 'datalane',
+        symmetric: bool = False,
+        **kwargs,
+    ) -> None:
+        assert not any(k in kwargs for k in ('k0', 'ic', 'affine', 'overflow_node')), (
+            'k0, ic, affine, overflow_mode must not be set for HardTanhConfig.'
+        )
+        kwargs.pop('i0', None)  # i0 is not used in HardTanhConfig
+
+        overflow_mode = 'SAT_SYM' if symmetric else 'SAT'
+        super().__init__(
+            q_type=q_type,
+            place=place,
+            k0=1,
+            ic=Constant(0),
+            i0=0,
+            overflow_mode=overflow_mode,
+            affine=None,
+            **kwargs,
+        )
+
+    def get_config(self):
+        conf = super().get_config()
+        del conf['ic']
+        del conf['k0']
+        del conf['i0']
+        del conf['overflow_mode']
+        del conf['affine']
+        return conf
+
+
+@register_keras_serializable(package='hgq')
+class HardSigmoidConfig(QuantizerConfig):
+    """Grammar sugar for HardSigmoid quantizer config.
+    Equivalent to QuantizerConfig with fixed k0=1, ic=Constant(1), affine=(0.25, 0.5).
+    """
+
+    def __init__(
+        self,
+        q_type: str = 'kif',
+        place: str = 'datalane',
+        **kwargs,
+    ) -> None:
+        assert not any(k in kwargs for k in ('k0', 'ic', 'affine', 'overflow_mode')), (
+            'k0, ic, affine, overflow_mode must not be set for HardSigmoidConfig.'
+        )
+        kwargs.pop('i0', None)  # i0 is not used in HardSigmoidConfig
+
+        super().__init__(
+            q_type=q_type,
+            place=place,
+            k0=1,
+            ic=Constant(1),
+            i0=1,
+            overflow_mode='SAT',
+            affine=(0.25, 0.5),
+            **kwargs,
+        )
+
+    def get_config(self):
+        conf = super().get_config()
+        del conf['ic']
+        del conf['k0']
+        del conf['i0']
+        del conf['overflow_mode']
+        del conf['affine']
+        return conf

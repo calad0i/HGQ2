@@ -5,7 +5,7 @@ from keras.src import backend
 
 from ..utils.misc import numbers
 
-__all__ = ['MinMax', 'Min', 'Max']
+__all__ = ['MinMax', 'Min', 'Max', 'Constant']
 
 
 @register_keras_serializable(package='hgq')
@@ -22,6 +22,21 @@ class MinMax(Constraint):
 
     def get_config(self):
         return {'min_value': self.min_value, 'max_value': self.max_value}
+
+
+@register_keras_serializable(package='hgq')
+class Constant(Constraint):
+    """Constrains the weights to a constant value."""
+
+    def __init__(self, value: numbers):
+        self.value = float(value)
+
+    def __call__(self, w):
+        w = backend.convert_to_tensor(w)
+        return ops.full_like(w, self.value)
+
+    def get_config(self):
+        return {'value': self.value}
 
 
 @register_keras_serializable(package='hgq')

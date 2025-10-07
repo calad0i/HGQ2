@@ -21,6 +21,7 @@ class Quantizer(Layer):
         self.config, kwargs = self.get_quantizer_config_kwargs(*args, **kwargs)
         self.qnoise_factor = self.config.qnoise_factor
         self.scaler = self.config.scaler
+        self.affine = self.config.affine
         super().__init__(**kwargs)
         self.quantizer = self.config.get_quantizer()
 
@@ -51,8 +52,10 @@ class Quantizer(Layer):
         outputs = self.quantizer.call(inputs, training=training)
         if self.scaler is not None:
             outputs = outputs * self.scaler  # type: ignore
-        if self.qnoise_factor is not None:
+        if self.qnoise_factor is not None and training:
             outputs = inputs + self.qnoise_factor * (outputs - inputs)  # type: ignore
+        if self.affine is not None:
+            outputs = outputs * self.affine[0] + self.affine[1]  # type: ignore
         return outputs
 
     def get_config(self):
