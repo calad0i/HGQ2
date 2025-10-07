@@ -195,17 +195,26 @@ float_table_default['homogeneous_axis'] = None
 float_table_default['heterogeneous_axis'] = ()
 float_table_default['is_weight'] = False
 
+
+kbi_bias_default = kbi_datalane_default.copy()
+kif_bias_default = kif_datalane_default.copy()
+float_bias_default = float_datalane_default.copy()
+
+kbi_bias_default['homogeneous_axis'] = ()
+kif_bias_default['homogeneous_axis'] = ()
+float_bias_default['homogeneous_axis'] = ()
+
 default_configs: dict[tuple[str, str], KIFConfig | KBIConfig | FloatConfig] = {
     ('kbi', 'weight'): kbi_weight_default,
-    ('kbi', 'bias'): kbi_weight_default.copy(),
+    ('kbi', 'bias'): kbi_bias_default,
     ('kbi', 'table'): kbi_table_default,
     ('kbi', 'datalane'): kbi_datalane_default,
     ('kif', 'weight'): kif_weight_default,
-    ('kif', 'bias'): kif_weight_default.copy(),
+    ('kif', 'bias'): kif_bias_default,
     ('kif', 'table'): kif_table_default,
     ('kif', 'datalane'): kif_datalane_default,
     ('float', 'weight'): float_weight_default,
-    ('float', 'bias'): float_weight_default.copy(),
+    ('float', 'bias'): float_bias_default,
     ('float', 'table'): float_table_default,
     ('float', 'datalane'): float_datalane_default,
 }
@@ -562,11 +571,11 @@ class QuantizerConfigScope:
         i, f, b = kwargs.get('i0', None), kwargs.get('f0', None), kwargs.get('b0', None)
         if sum((i is not None, f is not None, b is not None)) == 2:
             if i is None:
-                kwargs['i0'] = b - f
+                kwargs['i0'] = b - f  # type: ignore
             if f is None:
-                kwargs['f0'] = b - i
+                kwargs['f0'] = b - i  # type: ignore
             if b is None:
-                kwargs['b0'] = i + f
+                kwargs['b0'] = i + f  # type: ignore
 
         for k in kwargs:
             if k not in all_quantizer_keys:
