@@ -70,7 +70,7 @@ class QDense(QLayerBaseSingleInput, Dense):
         bw_inp = self.iq.bits_(shape)
         bw_ker = self.kq.bits_(ops.shape(self.kernel))
         ebops = ops.sum(ops.matmul(bw_inp, bw_ker))
-        ebops = ebops * self.n_parallel / self.parallelization_factor
+        ebops = ebops * self.n_parallel / self.parallelization_factor  # type: ignore
         if self.bq is not None:
             bw_bias = self.bq.bits_(ops.shape(self.bias))
             size = ops.cast(ops.prod(shape), self.dtype)
