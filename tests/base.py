@@ -137,14 +137,14 @@ class LayerTestBase:
             for _layer in model._flatten_layers(False):
                 if isinstance(_layer, FixedPointQuantizerKBI):
                     b = np.random.randint(0, 5, _layer._b.shape)
-                    i = np.array(ops.stop_gradient(_layer.i))
+                    i = ops.convert_to_numpy(ops.stop_gradient(_layer.i))
                     b = np.minimum(b, 12 - i)
                     if np.all(b == 0):
                         b.ravel()[0] = 1
                     _layer._b.assign(ops.array(b))
                 if isinstance(_layer, FixedPointQuantizerKIF):
                     f = np.random.randint(2, 5, _layer._f.shape)
-                    i = np.array(ops.stop_gradient(_layer.i))
+                    i = ops.convert_to_numpy(ops.stop_gradient(_layer.i))
                     f = np.minimum(f, 12 - i)
                     if np.all(i + f == 0):
                         f.ravel()[0] = 1
@@ -166,6 +166,9 @@ class LayerTestBase:
         model.save(save_path)
         loaded_model = keras.models.load_model(save_path, custom_objects=self.custom_objects)
         loaded_output = ops.stop_gradient(loaded_model(input_data))  # type: ignore
+
+        original_output = ops.convert_to_numpy(original_output)
+        loaded_output = ops.convert_to_numpy(loaded_output)
 
         np.testing.assert_array_equal(original_output, loaded_output)  # type: ignore
 

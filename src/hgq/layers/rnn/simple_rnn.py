@@ -1,16 +1,20 @@
+from warnings import warn
+
+import keras
 from keras import ops
-from keras.saving import deserialize_keras_object, register_keras_serializable, serialize_keras_object
+from keras.initializers import Constant
+from keras.saving import deserialize_keras_object, register_keras_serializable
 from keras.src.layers.input_spec import InputSpec
 from keras.src.layers.rnn.simple_rnn import RNN, SimpleRNN, SimpleRNNCell
 
-from ...config import QuantizerConfig
+from ...config import HardTanhConfig, QuantizerConfig
+from ...layers.core.base import QLayerMeta
 from ...quantizer import Quantizer
+from ...quantizer.internal import FixedPointQuantizerBase
 from ..core.base import QLayerBaseSingleInput
 
 
 class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
-    __no_wrap_call__ = True
-
     @property
     def kq(self):
         "Kernel Quantizer"
@@ -29,12 +33,21 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
     @property
     def sq(self):
         "State Quantizer"
+        if not self.enable_sq:
+            raise ValueError('State Quantizer is not enabled.')
         return self._sq
 
     @property
     def bq(self):
         "Bias Quantizer"
+        if not self.use_bias:
+            return None
         return self._bq
+
+    @property
+    def paq(self):
+        "Pre-Activation Quantizer"
+        return self._paq
 
     @property
     def qkernel(self):
@@ -46,12 +59,18 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
 
     @property
     def qbias(self):
-        return self.bq(self.bias)
+        if not self.use_bias:
+            return None
+        return self.bq(self.bias)  # type: ignore
+
+    @property
+    def enable_sq(self):
+        return self._enable_sq
 
     def __init__(
         self,
         units,
-        activation='tanh',
+        activation='linear',
         use_bias=True,
         kernel_initializer='glorot_uniform',
         recurrent_initializer='orthogonal',
@@ -65,24 +84,16 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
         dropout=0.0,
         recurrent_dropout=0.0,
         seed=None,
+        enable_sq: bool | None = None,
         iq_conf: QuantizerConfig | None = None,
         sq_conf: QuantizerConfig | None = None,
         kq_conf: QuantizerConfig | None = None,
         rkq_conf: QuantizerConfig | None = None,
         bq_conf: QuantizerConfig | None = None,
+        paq_conf: QuantizerConfig | None = None,
+        standalone=True,
         **kwargs,
     ):
-        iq_conf = iq_conf or QuantizerConfig(place='datalane')
-        sq_conf = sq_conf or QuantizerConfig(place='datalane')
-        kq_conf = kq_conf or QuantizerConfig(place='weight')
-        rkq_conf = rkq_conf or QuantizerConfig(place='weight')
-        bq_conf = bq_conf or QuantizerConfig(place='bias')
-        # self._iq = Quantizer(iq_conf, name='iq')
-        self._sq = Quantizer(sq_conf, name='sq')
-        self._kq = Quantizer(kq_conf, name='kq')
-        self._rkq = Quantizer(rkq_conf, name='rkq')
-        self._bq = Quantizer(bq_conf, name='bq')
-
         super().__init__(
             units=units,
             activation=activation,
@@ -103,11 +114,35 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
             **kwargs,
         )
 
+        if enable_sq is None:
+            enable_sq = standalone
+        self._enable_sq = enable_sq
+
+        iq_conf = iq_conf or QuantizerConfig(place='datalane')
+        sq_conf = sq_conf or QuantizerConfig(place='datalane')
+        kq_conf = kq_conf or QuantizerConfig(place='weight')
+        rkq_conf = rkq_conf or QuantizerConfig(place='weight')
+        bq_conf = bq_conf or QuantizerConfig(place='bias')
+        paq_conf = paq_conf or HardTanhConfig(place='datalane')
+
+        if self.enable_sq:
+            self._sq = Quantizer(sq_conf, name='sq')
+        self._kq = Quantizer(kq_conf, name='kq')
+        self._rkq = Quantizer(rkq_conf, name='rkq')
+        if use_bias:
+            self._bq = Quantizer(bq_conf, name='bq')
+        self._paq = Quantizer(paq_conf, name='paq')
+
+        self.standalone = standalone
+
     def build(self, input_shape):
-        self._sq.build((None, self.units))
+        if self.enable_sq:
+            self._sq.build((None, self.units))
         self._kq.build((input_shape[-1], self.units))
         self._rkq.build((self.units, self.units))
-        self._bq.build((self.units,))
+        if self.use_bias:
+            self._bq.build((self.units,))
+        self._paq.build((None, self.units))
         super().build(input_shape)
 
     def call(self, sequence, states, training=False):
@@ -122,38 +157,46 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
 
         qkernel = self.kq(self.kernel, training=training)
         qrecurrent_kernel = self.rkq(self.recurrent_kernel, training=training)
-        qstate = self.sq(prev_output, training=training)
+        if self.enable_sq:
+            qstate = self.sq(prev_output, training=training)
+        else:
+            # If the output of the activation is already quantized, sq shall be disabled.
+            qstate = prev_output
         qsequence = self.iq(sequence, training=training)
 
         h = ops.matmul(qsequence, qkernel)
         if self.bias is not None:
-            h += self.bq(self.bias, training=training)
+            h += self.bq(self.bias, training=training)  # type: ignore
 
         output = h + ops.matmul(qstate, qrecurrent_kernel)  # type: ignore
-        if self.activation is not None:
-            output = self.activation(output)
+
+        output = self.paq(output)
+        output = self.activation(output)
 
         new_state = [output] if isinstance(states, (list, tuple)) else output
         return output, new_state
 
     def get_config(self):
-        conf = super().get_config()
-        conf.update(
-            {
-                'iq_conf': self._iq.config,
-                'sq_conf': self._sq.config,
-                'kq_conf': self._kq.config,
-                'rkq_conf': self._rkq.config,
-                'bq_conf': self._bq.config,
-            }
-        )
-        return conf
+        return {
+            'iq_conf': self._iq.config,
+            'sq_conf': self._sq.config if self.enable_sq else None,
+            'kq_conf': self._kq.config,
+            'rkq_conf': self._rkq.config,
+            'bq_conf': self._bq.config if self.use_bias else None,
+            'paq_conf': self._paq.config,
+            'enable_sq': self._enable_sq,
+            'standalone': self.standalone,
+            **super().get_config(),
+        }
 
     def _compute_ebops(self, shape):
         bw_inp = self.iq.bits_(shape)
         bw_ker = self.kq.bits_(ops.shape(self.kernel))
         ebops1 = ops.sum(ops.matmul(bw_inp, bw_ker))
-        bw_state = self.sq.bits_((1, self.units))
+        if self.enable_sq:
+            bw_state = self.sq.bits_((1, self.units))
+        else:
+            bw_state = self.paq.bits_((1, self.units))
         bw_rker = self.rkq.bits_(ops.shape(self.recurrent_kernel))
         ebops2 = ops.sum(ops.matmul(bw_state, bw_rker))
         ebops = ebops1 + ebops2  # type: ignore
@@ -161,20 +204,114 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
             bw_bias = self.bq.bits_(ops.shape(self.bias))
             size = ops.cast(ops.prod(shape), self.dtype)
             ebops = ebops + ops.mean(bw_bias) * size  # type: ignore
-
         return ebops
+
+    @property
+    def enable_ebops(self):
+        # When used as a sublayer in the RNN layer, standalone is set to False
+        # EBOPs computation handled on the higher level RNN layer
+        return self._enable_ebops and self.standalone
+
+
+def _is_wrap_quantizer(q: Quantizer) -> bool:
+    if not isinstance(q, Quantizer):
+        return False
+    if not isinstance(q.quantizer, FixedPointQuantizerBase):
+        return False
+    return q.quantizer.overflow_mode == 'WRAP'
 
 
 @register_keras_serializable(package='hgq')
-class QSimpleRNN(SimpleRNN):
+class QRNN(RNN, metaclass=QLayerMeta):
+    __output_quantizer_handled__ = True
+
+    def _set_unroll(self):
+        backend = keras.backend.backend()
+        has_wrap_quantizers = any(_is_wrap_quantizer(layer) for layer in self._flatten_layers())
+        if backend == 'jax' and has_wrap_quantizers:
+            # JAX tracer issues when using jax scan with WRAP quantizers (range update is side effect)
+            # Force unrolling in this case
+            if self.unroll is False:
+                warn('JAX backend does not support WRAP quantizers with rolled RNNs. Forcing unrolling.')
+            self.unroll = True
+        if self.unroll is None:
+            self.unroll = False  # Keras default
+
+    def build(self, sequences_shape, initial_state_shape=None):
+        seq_len = sequences_shape[1]
+        if self.parallelization_factor == -1:
+            self.parallelization_factor = seq_len
+
+        if self.enable_ebops:
+            self._beta = self.add_weight(
+                name='beta',
+                shape=(),
+                initializer=self.cell._beta0,
+                trainable=False,
+            )
+            self._ebops = self.add_weight(
+                name='ebops',
+                shape=(),
+                initializer=Constant(0.0),
+                trainable=False,
+                dtype='uint32',
+            )
+        else:
+            self._beta = None
+            self._ebops = None
+
+        super().build(sequences_shape, initial_state_shape)
+
+    def get_config(self):
+        return {
+            'parallelization_factor': self.parallelization_factor,
+            'enable_ebops': self.enable_ebops,
+            'enable_iq': self.enable_iq,
+            'enable_oq': self.enable_oq,
+            'beta0': self.cell._beta0,
+            **super().get_config(),
+        }
+
+    @property
+    def enable_ebops(self):
+        return self.cell._enable_ebops
+
+    @property
+    def enable_iq(self):
+        return self.cell._enable_iq
+
+    @property
+    def enable_oq(self):
+        return self.cell._enable_oq
+
+    @property
+    def beta(self):
+        if self._beta is None:
+            return ops.cast(0, 'float32')
+        return ops.cast(self._beta, ops.dtype(self._beta))
+
+    @property
+    def ebops(self):
+        if self._ebops is None:
+            return ops.cast(0, 'uint32')
+        return ops.cast(self._ebops, ops.dtype(self._ebops))
+
+    @classmethod
+    def from_config(cls, config, custom_objects=None):
+        config = deserialize_keras_object(config, custom_objects=custom_objects)
+        return super().from_config(config)
+
+
+@register_keras_serializable(package='hgq')
+class QSimpleRNN(QRNN, SimpleRNN):
     """Fully-connected RNN where the output is to be fed back as the new input.
+    When the jax backend is used, if any `WRAP` quantizers are used, unroll will
+    be set to `True` to avoid the side effect issue in the `jax.lax.scan` loop.
 
     Args:
         units: Positive integer, dimensionality of the output space.
         activation: Activation function to use.
-            Default: hyperbolic tangent (`tanh`).
-            If you pass None, no activation is applied
-            (ie. "linear" activation: `a(x) = x`).
+            Default: linear, effectively hard_tanh by the pre-activation quantizer.
         use_bias: Boolean, (default `True`), whether the layer uses
             a bias vector.
         kernel_initializer: Initializer for the `kernel` weights matrix,
@@ -214,7 +351,10 @@ class QSimpleRNN(SimpleRNN):
         stateful: Boolean (default: `False`). If `True`, the last state
             for each sample at index i in a batch will be used as initial
             state for the sample of index i in the following batch.
-        unroll: Boolean (default: `False`).
+        unroll: Boolean | `None` (default: `None`).
+            `None` is equivalent to `False`. However, for the JAX backend, if
+            any `WRAP` quantizers are used, unroll will be set to `True`
+            to avoid the side effect issue in the `jax.lax.scan` loop.
             If `True`, the network will be unrolled,
             else a symbolic loop will be used.
             Unrolling can speed-up a RNN,
@@ -244,24 +384,12 @@ class QSimpleRNN(SimpleRNN):
             This is only relevant if `dropout` or `recurrent_dropout` is used.
         initial_state: List of initial state tensors to be passed to the first
             call of the cell.
-
-    Example:
-
-    ```python
-    inputs = np.random.random((32, 10, 8))
-    simple_rnn = keras.layers.SimpleRNN(4)
-    output = simple_rnn(inputs)  # The output has shape `(32, 4)`.
-    simple_rnn = keras.layers.SimpleRNN(4, return_sequences=True, return_state=True)
-    # whole_sequence_output has shape `(32, 10, 4)`.
-    # final_state has shape `(32, 4)`.
-    whole_sequence_output, final_state = simple_rnn(inputs)
-    ```
     """
 
     def __init__(
         self,
         units,
-        activation='tanh',
+        activation='linear',
         use_bias=True,
         kernel_initializer='glorot_uniform',
         recurrent_initializer='orthogonal',
@@ -279,14 +407,20 @@ class QSimpleRNN(SimpleRNN):
         return_state=False,
         go_backwards=False,
         stateful=False,
-        unroll=False,
+        unroll=None,
         seed=None,
         iq_conf: QuantizerConfig | None = None,
         sq_conf: QuantizerConfig | None = None,
         kq_conf: QuantizerConfig | None = None,
         rkq_conf: QuantizerConfig | None = None,
         bq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        paq_conf: QuantizerConfig | None = None,
         parallelization_factor=-1,
+        enable_oq: bool | None = None,
+        enable_iq: bool | None = None,
+        enable_ebops: bool | None = None,
+        beta0: float | None = None,
         **kwargs,
     ):
         cell = QSimpleRNNCell(
@@ -314,9 +448,15 @@ class QSimpleRNN(SimpleRNN):
             kq_conf=kq_conf,
             rkq_conf=rkq_conf,
             bq_conf=bq_conf,
+            oq_conf=oq_conf,
+            paq_conf=paq_conf,
+            standalone=False,
+            enable_oq=enable_oq,
+            enable_iq=enable_iq,
+            enable_ebops=enable_ebops,
+            beta0=beta0,
         )
-        RNN.__init__(
-            self,
+        super(SimpleRNN, self).__init__(
             cell,
             return_sequences=return_sequences,
             return_state=return_state,
@@ -327,35 +467,22 @@ class QSimpleRNN(SimpleRNN):
         )
         self.input_spec = [InputSpec(ndim=3)]
         self.parallelization_factor = parallelization_factor
+        self._set_unroll()
+
+    def _compute_ebops(self, shape):
+        cell_shape = (1, *shape[1:])
+        ebops = self.cell._compute_ebops(cell_shape) * self.parallelization_factor
+        return ebops
 
     def get_config(self):  # type: ignore
-        conf = super().get_config()
-        conf.update(
-            {
-                'iq_conf': self.cell._iq.config,
-                'sq_conf': self.cell._sq.config,
-                'kq_conf': self.cell._kq.config,
-                'rkq_conf': self.cell._rkq.config,
-                'bq_conf': self.cell._bq.config,
-                'parallelization_factor': self.parallelization_factor,
-            }
-        )
-        return serialize_keras_object(conf)
-
-    @classmethod
-    def from_config(cls, config):
-        config = deserialize_keras_object(config)
-        pass
-        return super().from_config(config)
-
-    def build(self, sequences_shape, initial_state_shape=None):
-        seq_len = sequences_shape[1]
-        if self.parallelization_factor == -1:
-            self.parallelization_factor = seq_len
-        return super().build(sequences_shape, initial_state_shape)
-
-    def call(self, sequences, initial_state=None, mask=None, training=False):
-        ebops = self.cell._compute_ebops((1,) + ops.shape(sequences[0])[1:]) * self.parallelization_factor
-        self.cell._ebops.assign(ops.cast(ebops, self.cell._ebops.dtype))  # type: ignore
-        self.add_loss(ebops * self.cell.beta)
-        return super().call(sequences, mask=mask, training=training, initial_state=initial_state)
+        base_conf = super().get_config()
+        conf = {
+            'iq_conf': self.cell.iq.config if self.enable_iq else None,
+            'sq_conf': self.cell.sq.config if self.cell.enable_sq else None,
+            'kq_conf': self.cell.kq.config,
+            'rkq_conf': self.cell.rkq.config,
+            'bq_conf': self.cell.bq.config if self.cell.use_bias else None,
+            'oq_conf': self.cell.oq.config if self.enable_oq else None,
+            'paq_conf': self.cell.paq.config,
+        }
+        return {**base_conf, **conf}

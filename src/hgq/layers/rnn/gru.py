@@ -1,11 +1,13 @@
 from keras import ops
-from keras.layers import GRUCell
-from keras.saving import register_keras_serializable, serialize_keras_object
+from keras.layers import GRU, GRUCell
+from keras.saving import register_keras_serializable
 from keras.src import tree
+from keras.src.layers.input_spec import InputSpec
 
 from ...config import HardSigmoidConfig, HardTanhConfig, QuantizerConfig
 from ...quantizer import Quantizer
 from ..core.base import QLayerBase
+from .simple_rnn import QRNN
 
 
 @register_keras_serializable(package='hgq')
@@ -81,15 +83,19 @@ class QGRUCell(QLayerBase, GRUCell):
         recurrent_dropout=0.0,
         reset_after=True,
         seed=None,
+        iq_conf: QuantizerConfig | None = None,
         paq_conf: QuantizerConfig | None = None,
         praq_conf: QuantizerConfig | None = None,
-        iq_conf: QuantizerConfig | None = None,
         sq_conf: QuantizerConfig | None = None,
         kq_conf: QuantizerConfig | None = None,
         rkq_conf: QuantizerConfig | None = None,
         bq_conf: QuantizerConfig | None = None,
         oq_conf: QuantizerConfig | None = None,
         rhq_conf: QuantizerConfig | None = None,
+        standalone: bool = True,
+        enable_ebops: bool | None = None,
+        enable_iq: bool | None = None,
+        enable_oq: bool | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -111,8 +117,12 @@ class QGRUCell(QLayerBase, GRUCell):
             reset_after=reset_after,
             seed=seed,
             oq_conf=oq_conf,
+            enable_oq=enable_oq,
+            enable_iq=enable_iq,
+            enable_ebops=enable_ebops,
             **kwargs,
         )
+
         paq_conf = paq_conf or HardTanhConfig(place='datalane')
         praq_conf = praq_conf or HardSigmoidConfig(place='datalane')
         iq_conf = iq_conf or QuantizerConfig(place='datalane')
@@ -121,6 +131,7 @@ class QGRUCell(QLayerBase, GRUCell):
         rkq_conf = rkq_conf or QuantizerConfig(place='weight')
         bq_conf = bq_conf or QuantizerConfig(place='bias')
         rhq_conf = rhq_conf or QuantizerConfig(place='datalane')
+        self.standalone = standalone
 
         if self._enable_iq:
             self._iq = Quantizer(iq_conf, name=f'{self.name}_iq')
@@ -129,7 +140,8 @@ class QGRUCell(QLayerBase, GRUCell):
         self._sq = Quantizer(sq_conf, name=f'{self.name}_sq')
         self._kq = Quantizer(kq_conf, name=f'{self.name}_kq')
         self._rkq = Quantizer(rkq_conf, name=f'{self.name}_rkq')
-        self._bq = Quantizer(bq_conf, name=f'{self.name}_bq') if self.use_bias else None
+        if self.use_bias:
+            self._bq = Quantizer(bq_conf, name=f'{self.name}_bq')
         self._rhq = Quantizer(rhq_conf, name=f'{self.name}_rhq')
 
     @property
@@ -179,7 +191,7 @@ class QGRUCell(QLayerBase, GRUCell):
         if not self.use_bias:
             raise AttributeError(f'bias has been disabled for {self.name}.')
         assert self.bq is not None
-        return self.bq(self.bias)  # type: ignore
+        return self.bq(self.bias)
 
     def qactivation(self, x):
         return self.paq(self.activation(x))
@@ -259,13 +271,14 @@ class QGRUCell(QLayerBase, GRUCell):
 
     def get_config(self):
         config = {
-            'paq_conf': serialize_keras_object(self.paq.config),
-            'praq_conf': serialize_keras_object(self.praq.config),
-            'iq_conf': serialize_keras_object(self.iq.config) if self.enable_iq else None,
-            'sq_conf': serialize_keras_object(self.sq.config),
-            'kq_conf': serialize_keras_object(self.kq.config),
-            'rkq_conf': serialize_keras_object(self.rkq.config),
-            'bq_conf': serialize_keras_object(self.bq.config) if self.use_bias else None,  # type: ignore
+            'paq_conf': self.paq.config,
+            'praq_conf': self.praq.config,
+            'iq_conf': self.iq.config if self.enable_iq else None,
+            'sq_conf': self.sq.config,
+            'kq_conf': self.kq.config,
+            'rkq_conf': self.rkq.config,
+            'bq_conf': self.bq.config if self.use_bias else None,  # type: ignore
+            'beta0': self._beta0,
             **super().get_config(),
         }
         return config
@@ -304,3 +317,204 @@ class QGRUCell(QLayerBase, GRUCell):
 
         ebops3 = ops.sum(bw_z * (bw_qhh + bw_state))  # type: ignore
         return ebops_0 + ebops1 + ebops2 + ebops3 + ebops_bias  # type: ignore
+
+    @property
+    def enable_ebops(self):
+        # When used as a sublayer in the RNN layer, standalone is set to False
+        # EBOPs computation handled on the higher level RNN layer
+        return self._enable_ebops and self.standalone
+
+
+class QGRU(QRNN, GRU):
+    """Gated Recurrent Unit - Cho et al. 2014.
+
+    The QGRU only allows the backend native implementation (no CuDNN kernel).
+    When the jax backend is used, if any `WRAP` quantizers are used, unroll will
+    be set to `True` to avoid the side effect issue in the `jax.lax.scan` loop.
+
+    Args:
+        units: Positive integer, dimensionality of the output space.
+        activation: Activation function to use.
+            Default: linear, effectively hard_tanh by the pre-activation quantizer.
+        recurrent_activation: Activation function to use
+            for the recurrent step.
+            Default: linear, effectively hard_sigmoid (slope=0.5) by the pre-activation quantizer.
+        use_bias: Boolean, (default `True`), whether the layer
+            should use a bias vector.
+        kernel_initializer: Initializer for the `kernel` weights matrix,
+            used for the linear transformation of the inputs. Default:
+            `"glorot_uniform"`.
+        recurrent_initializer: Initializer for the `recurrent_kernel`
+            weights matrix, used for the linear transformation of the recurrent
+            state. Default: `"orthogonal"`.
+        bias_initializer: Initializer for the bias vector. Default: `"zeros"`.
+        kernel_regularizer: Regularizer function applied to the `kernel` weights
+            matrix. Default: `None`.
+        recurrent_regularizer: Regularizer function applied to the
+            `recurrent_kernel` weights matrix. Default: `None`.
+        bias_regularizer: Regularizer function applied to the bias vector.
+            Default: `None`.
+        activity_regularizer: Regularizer function applied to the output of the
+            layer (its "activation"). Default: `None`.
+        kernel_constraint: Constraint function applied to the `kernel` weights
+            matrix. Default: `None`.
+        recurrent_constraint: Constraint function applied to the
+            `recurrent_kernel` weights matrix. Default: `None`.
+        bias_constraint: Constraint function applied to the bias vector.
+            Default: `None`.
+        dropout: Float between 0 and 1. Fraction of the units to drop for the
+            linear transformation of the inputs. Default: 0.
+        recurrent_dropout: Float between 0 and 1. Fraction of the units to drop
+            for the linear transformation of the recurrent state. Default: 0.
+        seed: Random seed for dropout.
+        return_sequences: Boolean. Whether to return the last output
+            in the output sequence, or the full sequence. Default: `False`.
+        return_state: Boolean. Whether to return the last state in addition
+            to the output. Default: `False`.
+        go_backwards: Boolean (default `False`).
+            If `True`, process the input sequence backwards and return the
+            reversed sequence.
+        stateful: Boolean (default: `False`). If `True`, the last state
+            for each sample at index i in a batch will be used as initial
+            state for the sample of index i in the following batch.
+        unroll: Boolean | `None` (default: `None`).
+            `None` is equivalent to `False`. However, for the JAX backend, if
+            any `WRAP` quantizers are used, unroll will be set to `True`
+            to avoid the side effect issue in the `jax.lax.scan` loop.
+            If `True`, the network will be unrolled,
+            else a symbolic loop will be used.
+            Unrolling can speed-up a RNN,
+            although it tends to be more memory-intensive.
+            Unrolling is only suitable for short sequences.
+        reset_after: GRU convention (whether to apply reset gate after or
+            before matrix multiplication). `False` is `"before"`,
+            `True` is `"after"` (default and cuDNN compatible).
+
+    Call arguments:
+        inputs: A 3D tensor, with shape `(batch, timesteps, feature)`.
+        mask: Binary tensor of shape `(samples, timesteps)` indicating whether
+            a given timestep should be masked  (optional).
+            An individual `True` entry indicates that the corresponding timestep
+            should be utilized, while a `False` entry indicates that the
+            corresponding timestep should be ignored. Defaults to `None`.
+        training: Python boolean indicating whether the layer should behave in
+            training mode or in inference mode. This argument is passed to the
+            cell when calling it. This is only relevant if `dropout` or
+            `recurrent_dropout` is used  (optional). Defaults to `None`.
+        initial_state: List of initial state tensors to be passed to the first
+            call of the cell (optional, `None` causes creation
+            of zero-filled initial state tensors). Defaults to `None`.
+    """
+
+    def __init__(
+        self,
+        units,
+        activation='linear',
+        recurrent_activation='linear',
+        use_bias=True,
+        kernel_initializer='glorot_uniform',
+        recurrent_initializer='orthogonal',
+        bias_initializer='zeros',
+        kernel_regularizer=None,
+        recurrent_regularizer=None,
+        bias_regularizer=None,
+        activity_regularizer=None,
+        kernel_constraint=None,
+        recurrent_constraint=None,
+        bias_constraint=None,
+        dropout=0.0,
+        recurrent_dropout=0.0,
+        seed=None,
+        return_sequences=False,
+        return_state=False,
+        go_backwards=False,
+        stateful=False,
+        unroll=None,
+        reset_after=True,
+        iq_conf: QuantizerConfig | None = None,
+        paq_conf: QuantizerConfig | None = None,
+        praq_conf: QuantizerConfig | None = None,
+        sq_conf: QuantizerConfig | None = None,
+        kq_conf: QuantizerConfig | None = None,
+        rkq_conf: QuantizerConfig | None = None,
+        bq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        rhq_conf: QuantizerConfig | None = None,
+        parallelization_factor=1,
+        enable_oq: bool | None = None,
+        enable_iq: bool | None = None,
+        enable_ebops: bool | None = None,
+        beta0: float | None = None,
+        **kwargs,
+    ):
+        cell = QGRUCell(
+            units,
+            activation=activation,
+            recurrent_activation=recurrent_activation,
+            use_bias=use_bias,
+            kernel_initializer=kernel_initializer,
+            recurrent_initializer=recurrent_initializer,
+            bias_initializer=bias_initializer,
+            kernel_regularizer=kernel_regularizer,
+            recurrent_regularizer=recurrent_regularizer,
+            bias_regularizer=bias_regularizer,
+            kernel_constraint=kernel_constraint,
+            recurrent_constraint=recurrent_constraint,
+            bias_constraint=bias_constraint,
+            dropout=dropout,
+            recurrent_dropout=recurrent_dropout,
+            reset_after=reset_after,
+            dtype=kwargs.get('dtype', None),
+            trainable=kwargs.get('trainable', True),
+            name='qgru_cell',
+            seed=seed,
+            standalone=False,
+            iq_conf=iq_conf,
+            paq_conf=paq_conf,
+            praq_conf=praq_conf,
+            sq_conf=sq_conf,
+            kq_conf=kq_conf,
+            rkq_conf=rkq_conf,
+            bq_conf=bq_conf,
+            oq_conf=oq_conf,
+            rhq_conf=rhq_conf,
+            enable_iq=enable_iq,
+            enable_oq=enable_oq,
+            enable_ebops=enable_ebops,
+            beta0=beta0,
+        )
+        super(GRU, self).__init__(
+            cell,
+            return_sequences=return_sequences,
+            return_state=return_state,
+            go_backwards=go_backwards,
+            stateful=stateful,
+            unroll=unroll,  # type: ignore
+            activity_regularizer=activity_regularizer,
+            **kwargs,
+        )
+        self.input_spec = InputSpec(ndim=3)
+        self.use_cudnn = False
+        self.parallelization_factor = parallelization_factor
+        self._set_unroll()
+
+    def get_config(self):
+        base_config = super().get_config()
+        conf = {
+            'iq_conf': self.cell.iq.config if self.cell.enable_iq else None,
+            'paq_conf': self.cell.paq.config,
+            'praq_conf': self.cell.praq.config,
+            'sq_conf': self.cell.sq.config,
+            'kq_conf': self.cell.kq.config,
+            'rkq_conf': self.cell.rkq.config,
+            'bq_conf': self.cell.bq.config if self.cell.use_bias else None,
+            'oq_conf': self.cell.oq.config if self.cell.enable_oq else None,
+            'rhq_conf': self.cell.rhq.config,
+        }
+        # del base_config['cell']
+        return {**base_config, **conf}
+
+    def _compute_ebops(self, shape):
+        state_shape = (shape[0], self.cell.units)
+        cell_shape = (shape[0], shape[2])  # (batch, features)
+        return self.cell._compute_ebops(cell_shape, state_shape) * self.parallelization_factor

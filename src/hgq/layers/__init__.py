@@ -44,6 +44,7 @@ from .pooling import (
 from .pooling import (
     QMaxPooling3D as QMaxPool3D,
 )
+from .rnn import QGRU, QSimpleRNN
 from .softmax import QSoftmax
 
 __all__ = [
@@ -96,4 +97,6 @@ __all__ = [
     'QGlobalMaxPooling1D',
     'QGlobalMaxPooling2D',
     'QGlobalMaxPooling3D',
+    'QSimpleRNN',
+    'QGRU',
 ]
