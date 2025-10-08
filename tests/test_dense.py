@@ -1,6 +1,8 @@
 import keras
 import pytest
+from keras import ops
 
+from hgq.config import QuantizerConfigScope
 from hgq.layers import QBatchNormDense, QDense, QEinsumDense, QEinsumDenseBatchnorm
 from tests.base import LayerTestBase
 
@@ -8,6 +10,7 @@ from tests.base import LayerTestBase
 class TestDense(LayerTestBase):
     da4ml_not_supported = False
     layer_cls = QDense
+    keras_layer_cls = keras.layers.Dense
 
     @pytest.fixture(params=[8])  # Test different output sizes
     def units(self, request):
@@ -32,6 +35,23 @@ class TestDense(LayerTestBase):
             overflow_mode=overflow_mode,
             temp_directory=temp_directory,
         )
+
+    def test_behavior(self, input_data, layer_kwargs):
+        with QuantizerConfigScope(default_q_type='dummy'):
+            hgq_layer = self.layer_cls(**layer_kwargs, enable_ebops=False)
+            keras_layer = self.keras_layer_cls(**layer_kwargs)
+
+        hgq_layer.build(input_data.shape)
+        keras_layer.build(input_data.shape)
+
+        keras_layer._kernel.assign(hgq_layer.qkernel)
+        if hgq_layer.use_bias:
+            keras_layer.bias.assign(hgq_layer.qbias)  # type: ignore
+
+        r_hgq = hgq_layer(input_data)
+        r_keras = keras_layer(input_data)
+
+        assert ops.all(r_hgq == r_keras), f'{r_hgq} != {r_keras}'
 
 
 class TestBatchNormDense(TestDense):
