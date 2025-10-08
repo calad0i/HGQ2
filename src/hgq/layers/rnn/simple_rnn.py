@@ -15,6 +15,68 @@ from ..core.base import QLayerBaseSingleInput
 
 
 class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
+    """Cell class for the QSimpleRNN layer.
+
+    This class processes one step within the whole time sequence input, whereas
+    `QSimpleRNN` processes the whole sequence.
+
+    Parameters
+    ----------
+    units : int
+        Positive integer, dimensionality of the output space.
+    activation : str, optional
+        Activation function to use. Default: "linear".
+    use_bias : bool, optional
+        Whether the layer should use a bias vector. Default: True.
+    kernel_initializer : str, optional
+        Initializer for the `kernel` weights matrix,
+        used for the linear transformation of the inputs. Default: "glorot_uniform".
+    recurrent_initializer : str, optional
+        Initializer for the `recurrent_kernel` weights matrix, used for the linear transformation
+        of the recurrent state. Default: "orthogonal".
+    bias_initializer : str, optional
+        Initializer for the bias vector. Default: "zeros".
+    kernel_regularizer : optional
+        Regularizer function applied to the `kernel` weights matrix. Default: None.
+    recurrent_regularizer : optional
+        Regularizer function applied to the `recurrent_kernel` weights matrix. Default: None.
+    bias_regularizer : optional
+        Regularizer function applied to the bias vector. Default: None.
+    kernel_constraint : optional
+        Constraint function applied to the `kernel` weights matrix. Default: None.
+    recurrent_constraint : optional
+        Constraint function applied to the `recurrent_kernel` weights matrix. Default: None.
+    bias_constraint : optional
+        Constraint function applied to the bias vector. Default: None.
+    dropout : float, optional
+        Float between 0 and 1. Fraction of the units to drop for the
+        linear transformation of the inputs. Default: 0.
+    recurrent_dropout : float, optional
+        Float between 0 and 1. Fraction of the units to drop for the
+        linear transformation of the recurrent state. Default: 0.
+    seed : int, optional
+        Random seed for dropout.
+    enable_sq : bool or None, optional
+        Whether to enable state quantizer.
+        When the output is already quantized and the state is 0-inited,
+        the state quantizer should be disabled to avoid double quantization.
+        Default: None, which means it will be set to the value of `standalone`.
+    iq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for input quantizer. Default: None.
+    sq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for state quantizer. Default: None.
+    kq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for kernel quantizer. Default: None.
+    rkq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for recurrent kernel quantizer. Default: None.
+    bq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for bias quantizer. Default: None.
+    paq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for pre-activation quantizer. Default: None.
+    standalone : bool, optional
+        Whether this cell is used standalone or as part of a larger RNN layer. Default: True.
+    """
+
     @property
     def kq(self):
         "Kernel Quantizer"
@@ -304,86 +366,116 @@ class QRNN(RNN, metaclass=QLayerMeta):
 
 @register_keras_serializable(package='hgq')
 class QSimpleRNN(QRNN, SimpleRNN):
-    """Fully-connected RNN where the output is to be fed back as the new input.
+    """Quantized Fully-connected RNN where the output is to be fed back as the new input.
+
     When the jax backend is used, if any `WRAP` quantizers are used, unroll will
     be set to `True` to avoid the side effect issue in the `jax.lax.scan` loop.
 
-    Args:
-        units: Positive integer, dimensionality of the output space.
-        activation: Activation function to use.
-            Default: linear, effectively hard_tanh by the pre-activation quantizer.
-        use_bias: Boolean, (default `True`), whether the layer uses
-            a bias vector.
-        kernel_initializer: Initializer for the `kernel` weights matrix,
-            used for the linear transformation of the inputs. Default:
-            `"glorot_uniform"`.
-        recurrent_initializer: Initializer for the `recurrent_kernel`
-            weights matrix, used for the linear transformation of the recurrent
-            state.  Default: `"orthogonal"`.
-        bias_initializer: Initializer for the bias vector. Default: `"zeros"`.
-        kernel_regularizer: Regularizer function applied to the `kernel` weights
-            matrix. Default: `None`.
-        recurrent_regularizer: Regularizer function applied to the
-            `recurrent_kernel` weights matrix. Default: `None`.
-        bias_regularizer: Regularizer function applied to the bias vector.
-            Default: `None`.
-        activity_regularizer: Regularizer function applied to the output of the
-            layer (its "activation"). Default: `None`.
-        kernel_constraint: Constraint function applied to the `kernel` weights
-            matrix. Default: `None`.
-        recurrent_constraint: Constraint function applied to the
-            `recurrent_kernel` weights matrix.  Default: `None`.
-        bias_constraint: Constraint function applied to the bias vector.
-            Default: `None`.
-        dropout: Float between 0 and 1.
-            Fraction of the units to drop for the linear transformation
-            of the inputs. Default: 0.
-        recurrent_dropout: Float between 0 and 1.
-            Fraction of the units to drop for the linear transformation of the
-            recurrent state. Default: 0.
-        return_sequences: Boolean. Whether to return the last output
-            in the output sequence, or the full sequence. Default: `False`.
-        return_state: Boolean. Whether to return the last state
-            in addition to the output. Default: `False`.
-        go_backwards: Boolean (default: `False`).
-            If `True`, process the input sequence backwards and return the
-            reversed sequence.
-        stateful: Boolean (default: `False`). If `True`, the last state
-            for each sample at index i in a batch will be used as initial
-            state for the sample of index i in the following batch.
-        unroll: Boolean | `None` (default: `None`).
-            `None` is equivalent to `False`. However, for the JAX backend, if
-            any `WRAP` quantizers are used, unroll will be set to `True`
-            to avoid the side effect issue in the `jax.lax.scan` loop.
-            If `True`, the network will be unrolled,
-            else a symbolic loop will be used.
-            Unrolling can speed-up a RNN,
-            although it tends to be more memory-intensive.
-            Unrolling is only suitable for short sequences.
-        iq_conf: QuantizerConfig, optional
-            Input Quantizer configuration
-        sq_conf: QuantizerConfig, optional
-            State Quantizer configuration
-        kq_conf: QuantizerConfig, optional
-            Kernel Quantizer configuration
-        rkq_conf: QuantizerConfig, optional
-            Recurrent Kernel Quantizer configuration
-        bq_conf: QuantizerConfig, optional
-            Bias Quantizer configuration
+    Parameters
+    ----------
+    units : int
+        Positive integer, dimensionality of the output space.
+    activation : str, optional
+        Activation function to use.
+        Default: linear, effectively hard_tanh by the pre-activation quantizer.
+    use_bias : bool, optional
+        Whether the layer uses a bias vector. Default: True.
+    kernel_initializer : str, optional
+        Initializer for the `kernel` weights matrix,
+        used for the linear transformation of the inputs. Default: "glorot_uniform".
+    recurrent_initializer : str, optional
+        Initializer for the `recurrent_kernel` weights matrix, used for the linear transformation
+        of the recurrent state. Default: "orthogonal".
+    bias_initializer : str, optional
+        Initializer for the bias vector. Default: "zeros".
+    kernel_regularizer : optional
+        Regularizer function applied to the `kernel` weights matrix. Default: None.
+    recurrent_regularizer : optional
+        Regularizer function applied to the `recurrent_kernel` weights matrix. Default: None.
+    bias_regularizer : optional
+        Regularizer function applied to the bias vector. Default: None.
+    activity_regularizer : optional
+        Regularizer function applied to the output of the layer (its "activation"). Default: None.
+    kernel_constraint : optional
+        Constraint function applied to the `kernel` weights matrix. Default: None.
+    recurrent_constraint : optional
+        Constraint function applied to the `recurrent_kernel` weights matrix. Default: None.
+    bias_constraint : optional
+        Constraint function applied to the bias vector. Default: None.
+    dropout : float, optional
+        Float between 0 and 1. Fraction of the units to drop for the linear transformation
+        of the inputs. Default: 0.
+    recurrent_dropout : float, optional
+        Float between 0 and 1. Fraction of the units to drop for the linear transformation of the
+        recurrent state. Default: 0.
+    return_sequences : bool, optional
+        Whether to return the last output in the output sequence, or the full sequence. Default: False.
+    return_state : bool, optional
+        Whether to return the last state in addition to the output. Default: False.
+    go_backwards : bool, optional
+        If True, process the input sequence backwards and return the reversed sequence. Default: False.
+    stateful : bool, optional
+        If True, the last state for each sample at index i in a batch will be used as initial
+        state for the sample of index i in the following batch. Default: False.
+    unroll : bool or None, optional
+        None is equivalent to False. However, for the JAX backend, if
+        any `WRAP` quantizers are used, unroll will be set to True
+        to avoid the side effect issue in the `jax.lax.scan` loop.
+        If True, the network will be unrolled,
+        else a symbolic loop will be used.
+        Unrolling can speed-up a RNN,
+        although it tends to be more memory-intensive.
+        Unrolling is only suitable for short sequences. Default: None.
+    seed : int, optional
+        Random seed for dropout.
+    iq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for input quantizer. Default: None.
+    sq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for state quantizer. Default: None.
+    kq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for kernel quantizer. Default: None.
+    rkq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for recurrent kernel quantizer. Default: None.
+    bq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for bias quantizer. Default: None.
+    oq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for output quantizer. Default: None.
+    paq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for pre-activation quantizer. Default: None.
+    parallelization_factor : int, optional
+        Factor for parallelization. Default: -1 (automatic).
+    enable_sq : bool or None, optional
+        Whether to enable state quantizer.
+        When the output is already quantized and the state is 0-inited,
+        the state quantizer should be disabled to avoid double quantization.
+        Default: False.
+    enable_oq : bool or None, optional
+        Whether to enable output quantizer. Default: None.
+    enable_iq : bool or None, optional
+        Whether to enable input quantizer. Default: None.
+    enable_ebops : bool or None, optional
+        Whether to enable energy-efficient bit operations. Default: None.
+    beta0 : float or None, optional
+        Beta0 parameter for quantizer. Default: None.
 
-    Call arguments:
-        sequence: A 3D tensor, with shape `[batch, timesteps, feature]`.
-        mask: Binary tensor of shape `[batch, timesteps]` indicating whether
-            a given timestep should be masked. An individual `True` entry
-            indicates that the corresponding timestep should be utilized,
-            while a `False` entry indicates that the corresponding timestep
-            should be ignored.
-        training: Python boolean indicating whether the layer should behave in
-            training mode or in inference mode.
-            This argument is passed to the cell when calling it.
-            This is only relevant if `dropout` or `recurrent_dropout` is used.
-        initial_state: List of initial state tensors to be passed to the first
-            call of the cell.
+    Notes
+    -----
+    sequence : array_like
+        A 3D tensor, with shape `[batch, timesteps, feature]`.
+    mask : array_like, optional
+        Binary tensor of shape `[batch, timesteps]` indicating whether
+        a given timestep should be masked. An individual `True` entry
+        indicates that the corresponding timestep should be utilized,
+        while a `False` entry indicates that the corresponding timestep
+        should be ignored.
+    training : bool, optional
+        Python boolean indicating whether the layer should behave in
+        training mode or in inference mode.
+        This argument is passed to the cell when calling it.
+        This is only relevant if `dropout` or `recurrent_dropout` is used.
+    initial_state : list, optional
+        List of initial state tensors to be passed to the first
+        call of the cell.
     """
 
     def __init__(
@@ -419,6 +511,7 @@ class QSimpleRNN(QRNN, SimpleRNN):
         parallelization_factor=-1,
         enable_oq: bool | None = None,
         enable_iq: bool | None = None,
+        enable_sq: bool | None = False,
         enable_ebops: bool | None = None,
         beta0: float | None = None,
         **kwargs,
@@ -449,6 +542,7 @@ class QSimpleRNN(QRNN, SimpleRNN):
             rkq_conf=rkq_conf,
             bq_conf=bq_conf,
             oq_conf=oq_conf,
+            enable_sq=enable_sq,
             paq_conf=paq_conf,
             standalone=False,
             enable_oq=enable_oq,
@@ -462,7 +556,7 @@ class QSimpleRNN(QRNN, SimpleRNN):
             return_state=return_state,
             go_backwards=go_backwards,
             stateful=stateful,
-            unroll=unroll,
+            unroll=unroll,  # type: ignore
             **kwargs,
         )
         self.input_spec = [InputSpec(ndim=3)]

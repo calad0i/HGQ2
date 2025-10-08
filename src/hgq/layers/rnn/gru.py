@@ -17,51 +17,92 @@ class QGRUCell(QLayerBase, GRUCell):
     This class processes one step within the whole time sequence input, whereas
     `keras.layer.GRU` processes the whole sequence.
 
-    Args:
-        units: Positive integer, dimensionality of the output space.
-        activation: Activation function to use. Default: hyperbolic tangent
-            (`tanh`). If you pass None, no activation is applied
-            (ie. "linear" activation: `a(x) = x`).
-        recurrent_activation: Activation function to use for the recurrent step.
-            Default: sigmoid (`sigmoid`). If you pass `None`, no activation is
-            applied (ie. "linear" activation: `a(x) = x`).
-        use_bias: Boolean, (default `True`), whether the layer
-            should use a bias vector.
-        kernel_initializer: Initializer for the `kernel` weights matrix,
-            used for the linear transformation of the inputs. Default:
-            `"glorot_uniform"`.
-        recurrent_initializer: Initializer for the `recurrent_kernel`
-            weights matrix, used for the linear transformation
-            of the recurrent state. Default: `"orthogonal"`.
-        bias_initializer: Initializer for the bias vector. Default: `"zeros"`.
-        kernel_regularizer: Regularizer function applied to the `kernel` weights
-            matrix. Default: `None`.
-        recurrent_regularizer: Regularizer function applied to the
-            `recurrent_kernel` weights matrix. Default: `None`.
-        bias_regularizer: Regularizer function applied to the bias vector.
-            Default: `None`.
-        kernel_constraint: Constraint function applied to the `kernel` weights
-            matrix. Default: `None`.
-        recurrent_constraint: Constraint function applied to the
-            `recurrent_kernel` weights matrix. Default: `None`.
-        bias_constraint: Constraint function applied to the bias vector.
-            Default: `None`.
-        dropout: Float between 0 and 1. Fraction of the units to drop for the
-            linear transformation of the inputs. Default: 0.
-        recurrent_dropout: Float between 0 and 1. Fraction of the units to drop
-            for the linear transformation of the recurrent state. Default: 0.
-        reset_after: GRU convention (whether to apply reset gate after or
-            before matrix multiplication). False = "before",
-            True = "after" (default and cuDNN compatible).
-        seed: Random seed for dropout.
+    Parameters
+    ----------
+    units : int
+        Positive integer, dimensionality of the output space.
+    activation : str, optional
+        Activation function to use. Default: hyperbolic tangent
+        (`tanh`). If you pass None, no activation is applied
+        (ie. "linear" activation: `a(x) = x`).
+    recurrent_activation : str, optional
+        Activation function to use for the recurrent step.
+        Default: sigmoid (`sigmoid`). If you pass `None`, no activation is
+        applied (ie. "linear" activation: `a(x) = x`).
+    use_bias : bool, optional
+        Whether the layer should use a bias vector. Default: True.
+    kernel_initializer : str, optional
+        Initializer for the `kernel` weights matrix,
+        used for the linear transformation of the inputs. Default: "glorot_uniform".
+    recurrent_initializer : str, optional
+        Initializer for the `recurrent_kernel` weights matrix, used for the linear transformation
+        of the recurrent state. Default: "orthogonal".
+    bias_initializer : str, optional
+        Initializer for the bias vector. Default: "zeros".
+    kernel_regularizer : optional
+        Regularizer function applied to the `kernel` weights matrix. Default: None.
+    recurrent_regularizer : optional
+        Regularizer function applied to the `recurrent_kernel` weights matrix. Default: None.
+    bias_regularizer : optional
+        Regularizer function applied to the bias vector. Default: None.
+    kernel_constraint : optional
+        Constraint function applied to the `kernel` weights matrix. Default: None.
+    recurrent_constraint : optional
+        Constraint function applied to the `recurrent_kernel` weights matrix. Default: None.
+    bias_constraint : optional
+        Constraint function applied to the bias vector. Default: None.
+    dropout : float, optional
+        Float between 0 and 1. Fraction of the units to drop for the
+        linear transformation of the inputs. Default: 0.
+    recurrent_dropout : float, optional
+        Float between 0 and 1. Fraction of the units to drop for the
+        linear transformation of the recurrent state. Default: 0.
+    reset_after : bool, optional
+        GRU convention (whether to apply reset gate after or
+        before matrix multiplication). False = "before",
+        True = "after" (default and cuDNN compatible).
+    seed : int, optional
+        Random seed for dropout.
+    iq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for input quantizer. Default: None.
+    paq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for post-activation quantizer. Default: None.
+    praq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for pre-recurrent activation quantizer. Default: None.
+    sq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for state quantizer. Default: None.
+    kq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for kernel quantizer. Default: None.
+    rkq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for recurrent kernel quantizer. Default: None.
+    bq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for bias quantizer. Default: None.
+    oq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for output quantizer. Default: None.
+    rhq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for recurrent hidden state quantizer. Default: None.
+    standalone : bool, optional
+        Whether this cell is used standalone or as part of a larger RNN layer.
+        EBOPS computation will be skipped when used as a sublayer.
+        Default: True.
+    enable_ebops : bool or None, optional
+        Whether to enable energy-efficient bit operations. Default: None.
+    enable_iq : bool or None, optional
+        Whether to enable input quantizer. Default: None.
+    enable_oq : bool or None, optional
+        Whether to enable output quantizer. Default: None.
 
-    Call arguments:
-        inputs: A 2D tensor, with shape `(batch, features)`.
-        states: A 2D tensor with shape `(batch, units)`, which is the state
-            from the previous time step.
-        training: Python boolean indicating whether the layer should behave in
-            training mode or in inference mode. Only relevant when `dropout` or
-            `recurrent_dropout` is used.
+    Notes
+    -----
+    inputs : array_like
+        A 2D tensor, with shape `(batch, features)`.
+    states : array_like
+        A 2D tensor with shape `(batch, units)`, which is the state
+        from the previous time step.
+    training : bool, optional
+        Python boolean indicating whether the layer should behave in
+        training mode or in inference mode. Only relevant when `dropout` or
+        `recurrent_dropout` is used.
     """
 
     def __init__(
@@ -332,78 +373,124 @@ class QGRU(QRNN, GRU):
     When the jax backend is used, if any `WRAP` quantizers are used, unroll will
     be set to `True` to avoid the side effect issue in the `jax.lax.scan` loop.
 
-    Args:
-        units: Positive integer, dimensionality of the output space.
-        activation: Activation function to use.
-            Default: linear, effectively hard_tanh by the pre-activation quantizer.
-        recurrent_activation: Activation function to use
-            for the recurrent step.
-            Default: linear, effectively hard_sigmoid (slope=0.5) by the pre-activation quantizer.
-        use_bias: Boolean, (default `True`), whether the layer
-            should use a bias vector.
-        kernel_initializer: Initializer for the `kernel` weights matrix,
-            used for the linear transformation of the inputs. Default:
-            `"glorot_uniform"`.
-        recurrent_initializer: Initializer for the `recurrent_kernel`
-            weights matrix, used for the linear transformation of the recurrent
-            state. Default: `"orthogonal"`.
-        bias_initializer: Initializer for the bias vector. Default: `"zeros"`.
-        kernel_regularizer: Regularizer function applied to the `kernel` weights
-            matrix. Default: `None`.
-        recurrent_regularizer: Regularizer function applied to the
-            `recurrent_kernel` weights matrix. Default: `None`.
-        bias_regularizer: Regularizer function applied to the bias vector.
-            Default: `None`.
-        activity_regularizer: Regularizer function applied to the output of the
-            layer (its "activation"). Default: `None`.
-        kernel_constraint: Constraint function applied to the `kernel` weights
-            matrix. Default: `None`.
-        recurrent_constraint: Constraint function applied to the
-            `recurrent_kernel` weights matrix. Default: `None`.
-        bias_constraint: Constraint function applied to the bias vector.
-            Default: `None`.
-        dropout: Float between 0 and 1. Fraction of the units to drop for the
-            linear transformation of the inputs. Default: 0.
-        recurrent_dropout: Float between 0 and 1. Fraction of the units to drop
-            for the linear transformation of the recurrent state. Default: 0.
-        seed: Random seed for dropout.
-        return_sequences: Boolean. Whether to return the last output
-            in the output sequence, or the full sequence. Default: `False`.
-        return_state: Boolean. Whether to return the last state in addition
-            to the output. Default: `False`.
-        go_backwards: Boolean (default `False`).
-            If `True`, process the input sequence backwards and return the
-            reversed sequence.
-        stateful: Boolean (default: `False`). If `True`, the last state
-            for each sample at index i in a batch will be used as initial
-            state for the sample of index i in the following batch.
-        unroll: Boolean | `None` (default: `None`).
-            `None` is equivalent to `False`. However, for the JAX backend, if
-            any `WRAP` quantizers are used, unroll will be set to `True`
-            to avoid the side effect issue in the `jax.lax.scan` loop.
-            If `True`, the network will be unrolled,
-            else a symbolic loop will be used.
-            Unrolling can speed-up a RNN,
-            although it tends to be more memory-intensive.
-            Unrolling is only suitable for short sequences.
-        reset_after: GRU convention (whether to apply reset gate after or
-            before matrix multiplication). `False` is `"before"`,
-            `True` is `"after"` (default and cuDNN compatible).
+    Parameters
+    ----------
+    units : int
+        Positive integer, dimensionality of the output space.
+    activation : str, optional
+        Activation function to use.
+        Default: linear, effectively hard_tanh by the pre-activation quantizer.
+    recurrent_activation : str, optional
+        Activation function to use for the recurrent step.
+        Default: linear, effectively hard_sigmoid (slope=0.5) by the pre-activation quantizer.
+    use_bias : bool, optional
+        Whether the layer should use a bias vector. Default: True.
+    kernel_initializer : str, optional
+        Initializer for the `kernel` weights matrix,
+        used for the linear transformation of the inputs. Default: "glorot_uniform".
+    recurrent_initializer : str, optional
+        Initializer for the `recurrent_kernel` weights matrix, used for the linear transformation
+        of the recurrent state. Default: "orthogonal".
+    bias_initializer : str, optional
+        Initializer for the bias vector. Default: "zeros".
+    kernel_regularizer : optional
+        Regularizer function applied to the `kernel` weights matrix. Default: None.
+    recurrent_regularizer : optional
+        Regularizer function applied to the `recurrent_kernel` weights matrix. Default: None.
+    bias_regularizer : optional
+        Regularizer function applied to the bias vector. Default: None.
+    activity_regularizer : optional
+        Regularizer function applied to the output of the layer (its "activation"). Default: None.
+    kernel_constraint : optional
+        Constraint function applied to the `kernel` weights matrix. Default: None.
+    recurrent_constraint : optional
+        Constraint function applied to the `recurrent_kernel` weights matrix. Default: None.
+    bias_constraint : optional
+        Constraint function applied to the bias vector. Default: None.
+    dropout : float, optional
+        Float between 0 and 1. Fraction of the units to drop for the
+        linear transformation of the inputs. Default: 0.
+    recurrent_dropout : float, optional
+        Float between 0 and 1. Fraction of the units to drop for the
+        linear transformation of the recurrent state. Default: 0.
+    seed : int, optional
+        Random seed for dropout.
+    return_sequences : bool, optional
+        Whether to return the last output in the output sequence, or the full sequence. Default: False.
+    return_state : bool, optional
+        Whether to return the last state in addition to the output. Default: False.
+    go_backwards : bool, optional
+        If True, process the input sequence backwards and return the reversed sequence. Default: False.
+    stateful : bool, optional
+        If True, the last state for each sample at index i in a batch will be used as initial
+        state for the sample of index i in the following batch. Default: False.
+    unroll : bool or None, optional
+        None is equivalent to False. However, for the JAX backend, if
+        any `WRAP` quantizers are used, unroll will be set to True
+        to avoid the side effect issue in the `jax.lax.scan` loop.
+        If True, the network will be unrolled,
+        else a symbolic loop will be used.
+        Unrolling can speed-up a RNN,
+        although it tends to be more memory-intensive.
+        Unrolling is only suitable for short sequences. Default: None.
+    reset_after : bool, optional
+        GRU convention (whether to apply reset gate after or
+        before matrix multiplication). False is "before",
+        True is "after" (default and cuDNN compatible). Default: True.
+    iq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for input quantizer. Default: None (global default)
+    paq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for post-activation quantizer.
+        Default: None (hard tanh like, w/ global default)
+    praq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for pre-recurrent activation quantizer.
+        Default: None (hard sigmoid like, w/ global default)
+    sq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for state quantizer. Default: None (global default)
+    kq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for kernel quantizer. Default: None (global default)
+    rkq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for recurrent kernel quantizer. Default: None (global default)
+    bq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for bias quantizer. Default: None (global default)
+    oq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for output quantizer. Default: None (global default)
+    rhq_conf : QuantizerConfig or None, optional
+        Quantizer configuration for recurrent hidden state quantizer. Default: None (global default)
+    parallelization_factor : int, optional
+        Factor for parallelization. Default: 1.
+    enable_oq : bool or None, optional
+        Whether to enable output quantizer. Default: None (global default)
+    enable_iq : bool or None, optional
+        Whether to enable input quantizer. Default: None (global default)
+    enable_ebops : bool or None, optional
+        Whether to enable energy-efficient bit operations. Default: None (global default)
+    beta0 : float or None, optional
+        Beta0 parameter for quantizer. Default: None (global default)
+    enable_ebops : bool or None, optional
+        Whether to enable EBOPs resource consumption estimation. Default: None (global default).
+    parallelization_factor : int, optional
+        Number of cells to be computed in parallel. Default: 1.
 
-    Call arguments:
-        inputs: A 3D tensor, with shape `(batch, timesteps, feature)`.
-        mask: Binary tensor of shape `(samples, timesteps)` indicating whether
-            a given timestep should be masked  (optional).
-            An individual `True` entry indicates that the corresponding timestep
-            should be utilized, while a `False` entry indicates that the
-            corresponding timestep should be ignored. Defaults to `None`.
-        training: Python boolean indicating whether the layer should behave in
-            training mode or in inference mode. This argument is passed to the
-            cell when calling it. This is only relevant if `dropout` or
-            `recurrent_dropout` is used  (optional). Defaults to `None`.
-        initial_state: List of initial state tensors to be passed to the first
-            call of the cell (optional, `None` causes creation
-            of zero-filled initial state tensors). Defaults to `None`.
+    Notes
+    -----
+    inputs : array_like
+        A 3D tensor, with shape `(batch, timesteps, feature)`.
+    mask : array_like, optional
+        Binary tensor of shape `(samples, timesteps)` indicating whether
+        a given timestep should be masked (optional).
+        An individual `True` entry indicates that the corresponding timestep
+        should be utilized, while a `False` entry indicates that the
+        corresponding timestep should be ignored. Defaults to `None`.
+    training : bool, optional
+        Python boolean indicating whether the layer should behave in
+        training mode or in inference mode. This argument is passed to the
+        cell when calling it. This is only relevant if `dropout` or
+        `recurrent_dropout` is used (optional). Defaults to `None`.
+    initial_state : list, optional
+        List of initial state tensors to be passed to the first
+        call of the cell (optional, `None` causes creation
+        of zero-filled initial state tensors). Defaults to `None`.
     """
 
     def __init__(
