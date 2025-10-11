@@ -605,3 +605,6 @@ class QGRU(QRNN, GRU):
         state_shape = (shape[0], self.cell.units)
         cell_shape = (shape[0], shape[2])  # (batch, features)
         return self.cell._compute_ebops(cell_shape, state_shape) * self.parallelization_factor
+
+
+QLayerBase.register(QGRU)

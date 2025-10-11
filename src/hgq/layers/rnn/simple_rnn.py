@@ -8,7 +8,7 @@ from keras.src.layers.input_spec import InputSpec
 from keras.src.layers.rnn.simple_rnn import RNN, SimpleRNN, SimpleRNNCell
 
 from ...config import HardTanhConfig, QuantizerConfig
-from ...layers.core.base import QLayerMeta
+from ...layers.core.base import QLayerBase, QLayerMeta
 from ...quantizer import Quantizer
 from ...quantizer.internal import FixedPointQuantizerBase
 from ..core.base import QLayerBaseSingleInput
@@ -580,3 +580,6 @@ class QSimpleRNN(QRNN, SimpleRNN):
             'paq_conf': self.cell.paq.config,
         }
         return {**base_conf, **conf}
+
+
+QLayerBase.register(QSimpleRNN)
