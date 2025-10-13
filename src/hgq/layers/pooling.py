@@ -14,6 +14,7 @@ from keras.layers import (
     MaxPooling3D,
 )
 
+from ..config import QuantizerConfig
 from .core.base import QLayerBaseSingleInput
 
 
@@ -29,51 +30,255 @@ class QBasePooling(QLayerBaseSingleInput):
 
 
 class QAveragePooling1D(QBasePooling, AveragePooling1D):
-    pass
+    def __init__(
+        self,
+        pool_size,
+        strides=None,
+        padding='valid',
+        data_format=None,
+        name=None,
+        iq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            pool_size=pool_size,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            name=name,
+            iq_conf=iq_conf,
+            oq_conf=oq_conf,
+            **kwargs,
+        )
 
 
 class QAveragePooling2D(QBasePooling, AveragePooling2D):
-    pass
+    def __init__(
+        self,
+        pool_size,
+        strides=None,
+        padding='valid',
+        data_format=None,
+        name=None,
+        iq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            pool_size=pool_size,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            name=name,
+            iq_conf=iq_conf,
+            oq_conf=oq_conf,
+            **kwargs,
+        )
 
 
 class QAveragePooling3D(QBasePooling, AveragePooling3D):
-    pass
+    def __init__(
+        self,
+        pool_size,
+        strides=None,
+        padding='valid',
+        data_format=None,
+        name=None,
+        iq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            pool_size=pool_size,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            name=name,
+            iq_conf=iq_conf,
+            oq_conf=oq_conf,
+            **kwargs,
+        )
 
 
 class QMaxPooling1D(QBasePooling, MaxPooling1D):
-    pass
+    def __init__(
+        self,
+        pool_size,
+        strides=None,
+        padding='valid',
+        data_format=None,
+        name=None,
+        iq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            pool_size=pool_size,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            name=name,
+            iq_conf=iq_conf,
+            oq_conf=oq_conf,
+            **kwargs,
+        )
 
 
 class QMaxPooling2D(QBasePooling, MaxPooling2D):
-    pass
+    def __init__(
+        self,
+        pool_size,
+        strides=None,
+        padding='valid',
+        data_format=None,
+        name=None,
+        iq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            pool_size=pool_size,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            name=name,
+            iq_conf=iq_conf,
+            oq_conf=oq_conf,
+            **kwargs,
+        )
 
 
 class QMaxPooling3D(QBasePooling, MaxPooling3D):
-    pass
+    def __init__(
+        self,
+        pool_size,
+        strides=None,
+        padding='valid',
+        data_format=None,
+        name=None,
+        iq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            pool_size=pool_size,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            name=name,
+            iq_conf=iq_conf,
+            oq_conf=oq_conf,
+            **kwargs,
+        )
 
 
 class QGlobalAveragePooling1D(QBasePooling, GlobalAveragePooling1D):  # type: ignore
-    pass
+    def __init__(
+        self,
+        data_format=None,
+        keepdims=False,
+        iq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            data_format=data_format,
+            keepdims=keepdims,
+            iq_conf=iq_conf,
+            oq_conf=oq_conf,
+            **kwargs,
+        )
 
 
 class QGlobalAveragePooling2D(QBasePooling, GlobalAveragePooling2D):
-    pass
+    def __init__(
+        self,
+        data_format=None,
+        keepdims=False,
+        iq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            data_format=data_format,
+            keepdims=keepdims,
+            iq_conf=iq_conf,
+            oq_conf=oq_conf,
+            **kwargs,
+        )
 
 
 class QGlobalAveragePooling3D(QBasePooling, GlobalAveragePooling3D):
-    pass
+    def __init__(
+        self,
+        data_format=None,
+        keepdims=False,
+        iq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            data_format=data_format,
+            keepdims=keepdims,
+            iq_conf=iq_conf,
+            oq_conf=oq_conf,
+            **kwargs,
+        )
 
 
 class QGlobalMaxPooling1D(QBasePooling, GlobalMaxPooling1D):
-    pass
+    def __init__(
+        self,
+        data_format=None,
+        keepdims=False,
+        iq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            data_format=data_format,
+            keepdims=keepdims,
+            iq_conf=iq_conf,
+            oq_conf=oq_conf,
+            **kwargs,
+        )
 
 
 class QGlobalMaxPooling2D(QBasePooling, GlobalMaxPooling2D):
-    pass
+    def __init__(
+        self,
+        data_format=None,
+        keepdims=False,
+        iq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            data_format=data_format,
+            keepdims=keepdims,
+            iq_conf=iq_conf,
+            oq_conf=oq_conf,
+            **kwargs,
+        )
 
 
 class QGlobalMaxPooling3D(QBasePooling, GlobalMaxPooling3D):
-    pass
+    def __init__(
+        self,
+        data_format=None,
+        keepdims=False,
+        iq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            data_format=data_format,
+            keepdims=keepdims,
+            iq_conf=iq_conf,
+            oq_conf=oq_conf,
+            **kwargs,
+        )
 
 
 __all__ = [
