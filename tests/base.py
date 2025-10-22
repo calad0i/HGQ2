@@ -210,7 +210,7 @@ class LayerTestBase:
             pytest.skip()
 
         from da4ml.codegen import HLSModel, VerilogModel
-        from da4ml.converter.hgq2.parser import trace_model
+        from da4ml.converter import trace_model
         from da4ml.trace import comb_trace
 
         inp, out = trace_model(model)

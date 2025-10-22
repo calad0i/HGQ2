@@ -1,7 +1,6 @@
 import inspect
 import re
 from typing import Any
-from warnings import warn
 
 import numpy as np
 
@@ -33,8 +32,3 @@ def gather_vars_to_kwargs(skip_pattern=None) -> dict[str, Any]:
         if k.startswith('__') and k.endswith('__'):
             del kwarg[k]
     return kwarg
-
-
-def warn_no_synth(conf: bool, msg: str):
-    if conf:
-        warn(msg, RuntimeWarning, stacklevel=2)

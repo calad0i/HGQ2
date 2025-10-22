@@ -3,7 +3,7 @@ from keras.src.layers.convolutional.base_conv import BaseConv
 
 from ..quantizer import Quantizer
 from ..quantizer.config import QuantizerConfig
-from ..utils.misc import gather_vars_to_kwargs, warn_no_synth
+from ..utils.misc import gather_vars_to_kwargs
 from .core.base import QLayerBaseSingleInput
 
 
@@ -41,9 +41,6 @@ class QBaseConv(QLayerBaseSingleInput, BaseConv):
         bq_conf = bq_conf or QuantizerConfig('default', 'bias')
         self._bq = Quantizer(bq_conf, name=f'{self.name}_bq') if use_bias else None
         self.parallelization_factor = parallelization_factor
-
-        dilation_is_1 = dilation_rate == 1 if isinstance(dilation_rate, int) else all(d == 1 for d in dilation_rate)  # type: ignore
-        warn_no_synth(not dilation_is_1, 'Dilation rate is not supported by hls4ml.')
 
     @property
     def kq(self):
@@ -246,5 +243,4 @@ class QConv3D(QBaseConv):
         **kwargs,
     ):
         kwargs = gather_vars_to_kwargs('self')
-        warn_no_synth(True, 'QConv3D is not supported by hls4ml.')
         super().__init__(rank=3, **kwargs)

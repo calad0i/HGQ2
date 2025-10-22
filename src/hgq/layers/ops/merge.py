@@ -4,7 +4,6 @@ from keras import ops
 from keras.layers import Add, Average, Dot, Maximum, Minimum, Multiply, Subtract
 from keras.src.layers.merging.base_merge import Merge
 
-from ...utils.misc import warn_no_synth
 from ..core.base import QLayerBaseMultiInputs
 
 
@@ -68,8 +67,6 @@ class QDot(QMerge, Dot):
 
     def build(self, input_shape):
         super().build(input_shape)
-        msg = """Dot layer with non-flat inputs is not supported by hls4ml. Use Einsum instead for io_parallel."""
-        warn_no_synth(any(len(s) > 2 for s in input_shape), msg)
 
     def _compute_ebops(self, *shapes):
         bits0, bits1 = (iq.bits_(shape) for iq, shape in zip(self.iq, shapes))

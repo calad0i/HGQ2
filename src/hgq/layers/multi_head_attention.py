@@ -415,7 +415,6 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 ops.convert_to_tensor(self._ebops),
             )
         )
-
         return round(ops.convert_to_numpy(ebops).item())  # type: ignore
 
     def call(

@@ -5,7 +5,6 @@ from keras import ops
 from keras.src import backend
 
 from ..quantizer import QuantizerConfig
-from ..utils.misc import warn_no_synth
 from .activation import QUnaryFunctionLUT
 from .core import QLayerBaseSingleInput
 
@@ -28,14 +27,13 @@ class QSoftmax(QLayerBaseSingleInput):
         # Keras h5 loader pops axis silent when it is a list longer than 1.
         axes = kwargs.pop('axes', None)
         assert axis is None or axes is None, 'Use only one of `axis` or `axes`.'
-        self.axes = axes or (tuple(axis) if isinstance(axis, Sequence) else (axis,))
+        self.axes = axes or (tuple(axis) if isinstance(axis, Sequence) else (axis,) if axis is not None else (-1,))
 
         self.supports_masking = True
         super().__init__(iq_conf=iq_conf, **kwargs)  # type: ignore
         self.stable = stable
         self.parallelization_factor = parallelization_factor
 
-        assert not allow_heterogeneous_table, 'No hls4ml support; remove this check if you know what you are doing.'
         self._allow_heterogeneous_table = allow_heterogeneous_table
 
         self.input_scaler = input_scaler
@@ -96,10 +94,8 @@ class QSoftmax(QLayerBaseSingleInput):
 
     def build(self, input_shape):
         self.exp_table.build(input_shape)
-        axis = sorted(i if i >= 0 else i + len(input_shape) for i in self.axes)
+        axis = sorted(i if i >= 0 else i + len(input_shape) for i in self.axes)  # type: ignore
         self.axes = tuple(axis)
-        cond = not all(i1 - i0 == 1 for i0, i1 in zip(axis[:-1], axis[1:]))
-        warn_no_synth(cond, f'Softmax axis is not contiguous, hls4ml will not be able to synthesize this layer: {self.axes}')
 
         inv_shape = list(input_shape)
         for i in self.axes:

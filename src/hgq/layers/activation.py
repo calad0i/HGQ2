@@ -30,7 +30,6 @@ class QUnaryFunctionLUT(Activation, QLayerBaseSingleInput):
     ):
         act_name = activation.__name__ if isinstance(activation, Callable) else activation
         assert act_name not in ('softmax', 'log_softmax'), f'activation {act_name} is not unary'
-        assert not allow_heterogeneous_table, 'No hls4ml support; remove this check if you know what you are doing.'
 
         self._allow_heterogeneous_table = allow_heterogeneous_table
         self._allow_heterogeneous_input = allow_heterogeneous_input
