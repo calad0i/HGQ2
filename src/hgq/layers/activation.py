@@ -23,8 +23,8 @@ class QUnaryFunctionLUT(Activation, QLayerBaseSingleInput):
         oq_conf: QuantizerConfig | None = None,
         enable_oq=True,
         enable_iq=True,
-        allow_heterogeneous_input: bool = False,
-        allow_heterogeneous_table: bool = False,
+        allow_heterogeneous_input: bool = True,
+        allow_heterogeneous_table: bool = True,
         override_oq_k0_to_0: bool = False,
         **kwargs,
     ):

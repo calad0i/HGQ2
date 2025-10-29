@@ -86,7 +86,7 @@ class QSoftmax(QLayerBaseSingleInput):
             enable_iq=self.stable,
             enable_oq=True,
             allow_heterogeneous_table=allow_heterogeneous_table,
-            allow_heterogeneous_input=False,
+            allow_heterogeneous_input=True,
             name=f'{self.name}_exp_table',
             enable_ebops=self.enable_ebops and stable,
             beta0=self._beta0.clone(),
@@ -143,7 +143,7 @@ class QSoftmax(QLayerBaseSingleInput):
 
         if not self.stable:
             # iq is disabled for exp table, compute here
-            ebops += ops.sum((2.0**inp_bits) * exp_bits) * 0.01  # type: ignore
+            ebops += ops.sum((2.0**inp_bits) * exp_bits) * 1e-4  # type: ignore
 
         return ebops * factor
 
