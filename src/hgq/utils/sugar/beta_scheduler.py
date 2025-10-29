@@ -43,7 +43,7 @@ class PieceWiseSchedule:
         beta: the beta value at that epoch
         interp: the interpolation type in the interval after that epoch, one of 'linear', 'log', 'constant'. After the last epoch defined in the intervals, the beta value will always be constant disregarding the interpolation type.
 
-        # Example: [(0, 0, 'linear'), (10, 1e-5, 'log'), (20, 1e-3, 'constant')] will start with beta=0, then increase to 1e-5 in 10 epochs linearly, and increase to 1e-3 in another 10 epochs logarithmically. beta will stay at 1e-3 after 20 epochs.
+        Example: `[(0, 0, 'linear'), (10, 1e-5, 'log'), (20, 1e-3, 'constant')]` will start with beta=0, then increase to 1e-5 in 10 epochs linearly, and increase to 1e-3 in another 10 epochs logarithmically. beta will stay at 1e-3 after 20 epochs.
     """
 
     def __init__(self, intervals: Sequence[tuple[int, float, str]]):

@@ -1,9 +1,7 @@
-"""S-QUARK
-===================================================
-Scalable Quantization-Aware Realtime Keras
+"""High Granularity Quantization 2
 ---------------------------------------------------
 
-The S-QUARK library provides a set of tools to quantize neural networks meant to be deployed on edge devices, mainly FPGAs with Keras. The library is designed to be scalable, allowing for the construction of fully-quantized models suitable for deployment with minimal effort.
+The HGQ2 library provides a set of tools to quantize neural networks meant to be deployed on edge devices, mainly FPGAs with Keras. The library is designed to be scalable, allowing for the construction of fully-quantized models suitable for deployment with minimal effort.
 
 Provides
 --------
@@ -23,11 +21,6 @@ The library is organized in a keras-like structure, with the following modules:
 - `utils`: Utility functions and classes, and some useful sugars
 - `constraints`: Custom constraints for quantization-aware training
 - `regularizers`: Custom regularizers for quantization-aware training
-
-Compatibility
--------------
-- hls4ml: WIP
-- QKeras: Never, as it is built on Keras v2. However, this library comes with a QKeras-like compatibility API. Refer to the `qkeras` module (top level, not under this) for more information.
 
 """
 
