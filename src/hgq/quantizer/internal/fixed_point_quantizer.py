@@ -96,6 +96,14 @@ class FixedPointQuantizerBase(TrainableQuantizerBase):
             return self.b + self.k
 
     @property
+    def fbits(self):
+        b = self.b
+        if self.overflow_mode == 'WRAP':
+            return b + self.k * ops.cast(b > 0, self.dtype)
+        else:
+            return b + self.k
+
+    @property
     def min(self):
         if self.symmetric:
             return -self.k * (2.0**self.i - 2.0**-self.f)
@@ -283,7 +291,7 @@ class FixedPointQuantizerKBI(FixedPointQuantizerBase):
 
                     f = self.bw_mapper.bw_to_x(self.b - new_i, ops.shape(inputs))  # type: ignore
                     rinputs = self.stateless_quantizer.round(inputs, f, stochastic, self.seed_gen)
-                    new_k = self.get_any_k(rinputs) & (self.b > 0)
+                    new_k = self.get_any_k(rinputs) & (self.b > 0)  # type: ignore
                     new_k = ops.cast(ops.cast(self.k, 'bool') | new_k, self._k.dtype)  # type: ignore
                     self._k.assign(new_k)
                     self._i.assign(new_i)

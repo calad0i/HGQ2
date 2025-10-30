@@ -109,6 +109,10 @@ class FloatPointQuantizer(TrainableQuantizerBase):
         return self.m + self.e + 1.0  # type: ignore
 
     @property
+    def fbits(self):
+        return self.bits
+
+    @property
     def min(self):
         return -self.max
 

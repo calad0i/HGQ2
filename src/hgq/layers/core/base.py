@@ -117,6 +117,14 @@ class QLayerMeta(ABCMeta):
 
 
 class QLayerBase(Layer, metaclass=QLayerMeta):
+    """Base class for quantized layers.
+
+    Handles: instantiation of input and output quantizers,
+    ebops and beta variable creation.
+
+    call method is wrapped to compute ebops and apply output quantizer if applicable.
+    """
+
     save_own_variables = Layer.save_own_variables
     load_own_variables = Layer.load_own_variables
     __output_quantizer_handled__ = False

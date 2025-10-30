@@ -99,6 +99,10 @@ class TrainableQuantizerBase(Layer):
         raise NotImplementedError
 
     @property
+    def fbits(self):
+        raise NotImplementedError
+
+    @property
     def min(self):
         raise NotImplementedError
 

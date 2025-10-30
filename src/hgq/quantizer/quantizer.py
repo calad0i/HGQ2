@@ -72,6 +72,10 @@ class Quantizer(Layer):
         return self.quantizer.bits
 
     @property
+    def fbits(self):
+        return self.quantizer.fbits
+
+    @property
     def q_type(self):
         return self.config.q_type
 
@@ -81,6 +85,10 @@ class Quantizer(Layer):
     def bits_(self, shape):
         bits = self.bits
         return self.quantizer.bw_mapper.bw_to_x(bits, shape)
+
+    def fbits_(self, shape):
+        fbits = self.fbits
+        return self.quantizer.bw_mapper.bw_to_x(fbits, shape)
 
     def min_(self, shape):
         _min = self.quantizer.min
