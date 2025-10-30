@@ -46,6 +46,7 @@ from .pooling import (
 )
 from .rnn import QGRU, QSimpleRNN
 from .softmax import QSoftmax
+from .table import QDenseT
 
 __all__ = [
     'QUnaryFunctionLUT',
@@ -99,4 +100,5 @@ __all__ = [
     'QGlobalMaxPooling3D',
     'QSimpleRNN',
     'QGRU',
+    'QDenseT',
 ]
