@@ -37,10 +37,9 @@ class QDenseT(QLayerBaseSingleInput):
 
     def _build_module(self, n_in: int):
         layers = []
+        _shape = (n_in, self.n_out, self.d_hl)
         for _ in range(self.n_hl):
-            layers.append(
-                keras.layers.EinsumDense('biod,iodD->bioD', (n_in, self.n_out, self.d_hl), self.subnn_activation, bias_axes='ioD')
-            )
+            layers.append(keras.layers.EinsumDense('biod,iodD->bioD', _shape, self.subnn_activation, bias_axes='ioD'))
         l_out = keras.layers.EinsumDense('biod,iod->bio', (n_in, self.n_out), 'linear', bias_axes='io')
         layers.append(l_out)
         module = keras.models.Sequential(layers)
@@ -57,10 +56,11 @@ class QDenseT(QLayerBaseSingleInput):
 
     def build(self, input_shape):
         input_shape = tuple(input_shape)
+        self.n_in = input_shape[-1]
         if self.enable_iq and not self.iq.built:
             self.iq.build(input_shape + (self.n_out,))
         self.toq.build(input_shape + (self.n_out,))
-        self.module = self._build_module(input_shape[-1])
+        self.module = self._build_module(self.n_in)
         self.module.build(input_shape + (self.n_out, 1))
         super().build(input_shape)
 
