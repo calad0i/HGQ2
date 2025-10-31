@@ -126,6 +126,10 @@ class DummyQuantizer(TrainableQuantizerBase):
         return ops.convert_to_tensor(0, 'float32')
 
     @property
+    def fbits(self):
+        return ops.convert_to_tensor(0, 'float32')
+
+    @property
     def min(self):
         return -_large_number(self.dtype)
 
