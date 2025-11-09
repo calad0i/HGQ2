@@ -43,16 +43,11 @@ If you are using `hls4ml`, please make sure it is at least version 1.2:
 
 ```bash
 pip install hls4ml>=1.2.0
-
-Note that **version 1.2** has **not yet been released on PyPI**, so installing from GitHub is required.
-
-```bash
-pip install "hls4ml @ git+https://github.com/fastmachinelearning/hls4ml@main"
 ```
 
 ## Usage
 
-Please refer to the [documentation](https://calad0i.github.io/HGQ2/) for more details on how to use the library. 
+Please refer to the [documentation](https://calad0i.github.io/HGQ2/) for more details on how to use the library.
 
 A minimal example is shown below:
 
