@@ -45,10 +45,15 @@ def qkeras_layer_wrap(cls: type):
             v = v if not isinstance(v, str) else get_quantizer(v)
             kwargs[new_k] = v
 
-        # Disable EBOPS; only explicitly enabled quantizers will be used
-        kwargs['enable_ebops'] = False
-        kwargs['enable_iq'] = kwargs.get('iq_conf') is not None
-        kwargs['enable_oq'] = kwargs.get('oq_conf') is not None
+        if issubclass(cls, layers.QLayerBase):
+            # Disable EBOPS; only explicitly enabled quantizers will be used
+            kwargs['enable_ebops'] = False
+            kwargs['enable_iq'] = kwargs.get('iq_conf') is not None
+            kwargs['enable_oq'] = kwargs.get('oq_conf') is not None
+        else:
+            assert issubclass(cls, layers.Quantizer), f'Unexpected class {cls.__name__}.'
+            if 'activation' in kwargs:
+                kwargs['config'] = kwargs.pop('activation')
         with QuantizerConfigScope(default_q_type='dummy'):
             return original_init(self, *args, **kwargs)
 
@@ -62,3 +67,6 @@ for name, obj in layers.__dict__.items():
         continue
     if issubclass(obj, layers.QLayerBase):
         globals()[name] = qkeras_layer_wrap(obj)
+
+
+QActivation = qkeras_layer_wrap(layers.Quantizer)

@@ -1,6 +1,6 @@
-from .quantized_bits import quantized_bits
+from .quantized_bits import quantized_bits, quantized_relu
 
-__all__ = ['quantized_bits']
+__all__ = ['quantized_bits', 'quantized_relu', 'get_quantizer']
 
 
 def get_quantizer(str_conf: str):
