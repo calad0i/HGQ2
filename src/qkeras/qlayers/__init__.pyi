@@ -139,7 +139,7 @@ class QSoftmax(layers.QSoftmax):
 class QActivation(layers.QUnaryFunctionLUT):
     def __init__(
         self,
-        function,
+        activation,
         input_quantizer: None | QuantizerConfig | str = None,
         output_quantizer: None | QuantizerConfig | str = None,
         allow_heterogeneous_table: bool = False,
