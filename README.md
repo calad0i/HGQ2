@@ -73,3 +73,19 @@ A minimal example is shown below:
          QDense(10)
       ])
 ```
+
+
+
+
+## Publications
+
+HGQ is still under review. Please refer to our ArXiv paper for more details. If you use HGQ or HGQ2 in your research, please use the following bibtex entry to cite us:
+
+```{=latex}
+@article{sun2024gradient,
+  title={Gradient-based automatic mixed precision quantization for neural networks on-chip},
+  author={Sun, Chang and {\AA}rrestad, Thea K and Loncar, Vladimir and Ngadiuba, Jennifer and Spiropulu, Maria},
+  journal={arXiv preprint arXiv:2405.00645},
+  year={2024}
+}
+```
