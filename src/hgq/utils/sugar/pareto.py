@@ -22,6 +22,8 @@ class ParetoFront(Callback):
             for metric in metrics:
                 fname_format += f'_{metric}={{{metric}}}'
             fname_format += '.keras'
+        else:
+            fname_format = fname_format.strip()
         self.path = Path(path)
         self.paths = []
         self.record = []
@@ -29,6 +31,12 @@ class ParetoFront(Callback):
         self.sides = np.array(sides)
         self.enable_if = enable_if
         self.fname_format = fname_format
+
+        _fname_format = fname_format.lower()
+        if _fname_format.endswith('.weights.h5') or _fname_format.endswith('.weights.json'):
+            self._save_weights = True
+        else:
+            self._save_weights = False
 
     def on_train_begin(self, logs=None):
         os.makedirs(self.path, exist_ok=True)
@@ -59,4 +67,7 @@ class ParetoFront(Callback):
         path = self.path / self.fname_format.format(**logs)
         self.record.append(new_metrics)
         self.paths.append(path)
-        self.model.save(self.paths[-1])
+        if self._save_weights:
+            self.model.save_weights(path)
+        else:
+            self.model.save(path)
