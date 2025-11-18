@@ -70,7 +70,7 @@ class QDense(QLayerBaseSingleInput, Dense):
         bw_inp = self.iq.bits_(shape)
         bw_ker = self.kq.bits_(ops.shape(self.kernel))
         ebops = ops.sum(ops.matmul(bw_inp, bw_ker))
-        ebops = ebops * self.n_parallel / self.parallelization_factor  # type: ignore
+        ebops = ebops * self.parallelization_factor / self.n_parallel  # type: ignore
         if self.bq is not None:
             bw_bias = self.bq.bits_(ops.shape(self.bias))
             size = ops.cast(ops.prod(shape), self.dtype)
@@ -193,7 +193,7 @@ class QBatchNormDense(QDense):
         else:
             bn_gamma = 1
         scaler = bn_gamma / ops.sqrt(var + self.epsilon)  # type: ignore
-        kernel = ops.cast(self.kernel, self.kernel.dtype)
+        kernel = ops.cast(self.kernel, self.kernel.dtype)  # type: ignore
         fused_qkernel = self.kq(scaler[:, None] * kernel)  # type: ignore
 
         offset = -ops.dot(mean, kernel)
