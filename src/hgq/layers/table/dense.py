@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from math import prod
+from math import prod, sqrt
 
 import keras
 from keras import ops
@@ -17,11 +17,17 @@ class QDenseT(QLayerBaseSingleInput):
         n_out: int,
         n_hl: int = 1,
         d_hl: int = 8,
-        use_bias: bool = True,
         activation: Callable | None | str = None,
-        subnn_activation: str | Callable | Layer | None = None,
+        subnn_activation: str | Callable | Layer | None = 'tanh',
         toq_conf: QuantizerConfig | None = None,
         parallelization_factor: int = -1,
+        use_bias: bool = True,
+        batch_norm: bool = False,
+        bn_center: bool = True,
+        bn_scale: bool = True,
+        bn_momentum: float = 0.99,
+        bn_epsilon: float = 0.001,
+        table_spec: int | tuple[int, int] = (6, 5),
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -31,7 +37,14 @@ class QDenseT(QLayerBaseSingleInput):
         self.use_bias = use_bias
         self.subnn_activation = keras.activations.get(subnn_activation)
         self.parallelization_factor = parallelization_factor
-
+        self.enable_bn = batch_norm
+        self.table_spec = (table_spec, table_spec) if isinstance(table_spec, int) else table_spec
+        self.bn_args = {
+            'center': bn_center,
+            'scale': bn_scale,
+            'momentum': bn_momentum,
+            'epsilon': bn_epsilon,
+        }
         assert n_hl >= 0
 
         self.n_hl = n_hl
@@ -59,15 +72,6 @@ class QDenseT(QLayerBaseSingleInput):
         module = keras.models.Sequential(layers)
         return module
 
-    def call(self, x, training=None):
-        n_in = keras.ops.shape(x)[-1]
-        x = keras.ops.broadcast_to(x[..., None], (*keras.ops.shape(x)[:-1], n_in, self.n_out))  # (B, N_in, N_out)
-        if self.enable_iq:
-            x = self.iq(x)
-        x = x[..., None]  # (B, ..., N_in, N_out, 1)
-
-        return self.activation(ops.sum(self.toq(self.module(x, training=training)), axis=-2))
-
     def build(self, input_shape):
         input_shape = tuple(input_shape)
         self.n_in = input_shape[-1]
@@ -81,18 +85,41 @@ class QDenseT(QLayerBaseSingleInput):
         self.toq.build(input_shape + (self.n_out,))
         self.module = self._build_module(self.n_in)
         self.module.build(input_shape + (self.n_out, 1))
+
+        if self.enable_bn:
+            self.bn_module = keras.layers.BatchNormalization(
+                axis=-1,
+                **self.bn_args,
+            )
+            self.bn_module.build(input_shape + (self.n_out,))
+
         super().build(input_shape)
+
+    def call(self, x, training=None):
+        n_in = ops.shape(x)[-1]
+        x = ops.broadcast_to(x[..., None], (*ops.shape(x)[:-1], n_in, self.n_out))  # (B, N_in, N_out)
+        if self.enable_iq:
+            x = self.iq(x)
+        x = x[..., None]  # (B, ..., N_in, N_out, 1)
+        table_out = self.module(x, training=training)  # (B, ..., N_in, N_out, 1) -> (B, ..., N_in, N_out)
+
+        if self.enable_bn:
+            table_out = self.bn_module(table_out, training=training) / sqrt(self.n_in)
+
+        return self.activation(ops.sum(self.toq(table_out), axis=-2))
 
     def _compute_ebops(self, shape: tuple[int, ...]):
         q_shape = shape + (self.n_out,)
         bits_in = self.iq.fbits_(q_shape)
         bits_out = self.toq.fbits_(q_shape)
 
-        eff_lut5_count = ops.where(bits_in >= 5, 2 ** (bits_in - 5), 0.2 * bits_in)  # type: ignore
+        B, b = self.table_spec
 
-        table_lut5s = ops.dot(ops.ravel(eff_lut5_count), ops.ravel(bits_out)) * 0.5  # type: ignore
+        small_lut_count = ops.where(bits_in >= b, 2 ** (bits_in - b), bits_in / b)  # type: ignore
 
-        return (table_lut5s + ops.sum(bits_out)) * self.parallelization_factor / self.n_parallel
+        large_lut_count = ops.dot(ops.ravel(small_lut_count), ops.ravel(bits_out)) * 2 ** (b - B)  # type: ignore
+
+        return (large_lut_count + ops.sum(bits_out)) * self.parallelization_factor / self.n_parallel
 
     @property
     def toq(self):
@@ -106,6 +133,13 @@ class QDenseT(QLayerBaseSingleInput):
             'subnn_activation': self.subnn_activation,
             'activation': self.activation,
             'toq_conf': self.toq.config,
+            'use_bias': self.use_bias,
+            'parallelization_factor': self.parallelization_factor,
+            'batch_norm': self.enable_bn,
+            'bn_center': self.bn_args['center'],
+            'bn_scale': self.bn_args['scale'],
+            'bn_momentum': self.bn_args['momentum'],
+            'bn_epsilon': self.bn_args['epsilon'],
             **super().get_config(),
         }
         return config
