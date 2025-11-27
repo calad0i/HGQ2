@@ -49,7 +49,8 @@ class QDense(QLayerBaseSingleInput, Dense):
         super().build(input_shape)
         n_parallel = prod(input_shape[1:-1])
         self.n_parallel = n_parallel
-        self.parallelization_factor = self.parallelization_factor if self.parallelization_factor > 0 else n_parallel
+        if self.parallelization_factor < 0:
+            self.parallelization_factor = self.n_parallel
 
         self.kq.build(ops.shape(self._kernel))
         if self.bias is not None:
