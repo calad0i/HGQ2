@@ -17,8 +17,9 @@ class QDenseT(QLayerBaseSingleInput):
         n_out: int,
         n_hl: int = 1,
         d_hl: int = 8,
-        subnn_activation: str | Callable | Layer | None = None,
+        use_bias: bool = True,
         activation: Callable | None | str = None,
+        subnn_activation: str | Callable | Layer | None = None,
         toq_conf: QuantizerConfig | None = None,
         parallelization_factor: int = -1,
         **kwargs,
@@ -27,6 +28,7 @@ class QDenseT(QLayerBaseSingleInput):
 
         self.n_out = n_out
         self.d_hl = d_hl
+        self.use_bias = use_bias
         self.subnn_activation = keras.activations.get(subnn_activation)
         self.parallelization_factor = parallelization_factor
 
@@ -41,16 +43,18 @@ class QDenseT(QLayerBaseSingleInput):
     def _build_module(self, n_in: int):
         layers = []
         _shape = (n_in, self.n_out, self.d_hl)
+        bias_axes = 'ioD' if self.use_bias else None
         for _ in range(self.n_hl):
             layers.append(
                 keras.layers.EinsumDense(
                     '...iod,iodD->...ioD',
                     _shape,
                     self.subnn_activation,
-                    bias_axes='ioD',
+                    bias_axes=bias_axes,
                 )
             )
-        l_out = keras.layers.EinsumDense('...iod,iod->...io', (n_in, self.n_out), 'linear', bias_axes='io')
+        bias_axes = 'io' if self.use_bias else None
+        l_out = keras.layers.EinsumDense('...iod,iod->...io', (n_in, self.n_out), 'linear', bias_axes=bias_axes)
         layers.append(l_out)
         module = keras.models.Sequential(layers)
         return module
