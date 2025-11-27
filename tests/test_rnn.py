@@ -6,7 +6,8 @@ from keras import layers, ops
 from hgq.config import QuantizerConfig, QuantizerConfigScope
 from hgq.layers.rnn import QGRU, QSimpleRNN
 from hgq.layers.rnn.simple_rnn import QRNN
-from tests.base import LayerTestBase
+
+from .base import LayerTestBase
 
 
 class RNNTestBase(LayerTestBase):

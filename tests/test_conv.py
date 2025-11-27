@@ -3,7 +3,8 @@ import numpy as np
 import pytest
 
 from hgq.layers import QConv1D, QConv2D
-from tests.base import LayerTestBase
+
+from .base import LayerTestBase
 
 
 class TestConv1D(LayerTestBase):

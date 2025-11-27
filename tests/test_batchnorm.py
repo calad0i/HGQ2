@@ -6,7 +6,8 @@ from keras.initializers import RandomNormal, RandomUniform
 
 from hgq.config import QuantizerConfigScope
 from hgq.layers import QBatchNormalization
-from tests.base import LayerTestBase
+
+from .base import LayerTestBase
 
 
 class TestBatchNorm(LayerTestBase):

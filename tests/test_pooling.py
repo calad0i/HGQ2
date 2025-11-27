@@ -16,7 +16,8 @@ from hgq.layers.pooling import (
     QMaxPooling1D,
     QMaxPooling2D,
 )
-from tests.base import LayerTestBase
+
+from .base import LayerTestBase
 
 
 class PoolingTestBase(LayerTestBase):

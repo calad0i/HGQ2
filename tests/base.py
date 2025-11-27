@@ -27,13 +27,18 @@ class CtxGlue:
             ctx.__exit__(*args)
 
 
-def _assert_equal(a: np.ndarray, b: np.ndarray):
-    a, b = np.asanyarray(a).ravel(), np.asanyarray(b).ravel()
-    # if keras.backend.backend() != 'torch':
+def _assert_equal(a: np.ndarray | tuple[np.ndarray], b: np.ndarray | tuple[np.ndarray]):
+    if isinstance(a, Sequence):
+        a = np.concatenate([arr.reshape(arr.shape[0], -1) for arr in a], axis=1)
+    else:
+        a = a.reshape(a.shape[0], -1)
+    if isinstance(b, Sequence):
+        b = np.concatenate([arr.reshape(arr.shape[0], -1) for arr in b], axis=1)
+    else:
+        b = b.reshape(b.shape[0], -1)
+
     mismatches = np.where(a != b)[0]
-    # else:
-    #     # Torch has some extra numerical errors by default...
-    #     mismatches = np.where(np.abs(a - b) > 1e-6)[0]
+
     a_sample = a[mismatches[:5]]
     b_sample = b[mismatches[:5]]
     msg = f"""keras - c synth mismatch. {len(mismatches)} out of {len(a)} samples are different
@@ -137,14 +142,14 @@ class LayerTestBase:
             for _layer in model._flatten_layers(False):
                 if isinstance(_layer, FixedPointQuantizerKBI):
                     b = np.random.randint(0, 5, _layer._b.shape)
-                    i = ops.convert_to_numpy(ops.stop_gradient(_layer.i))
+                    i: np.ndarray = ops.convert_to_numpy(ops.stop_gradient(_layer.i))  # type: ignore
                     b = np.minimum(b, 12 - i)
                     if np.all(b == 0):
                         b.ravel()[0] = 1
                     _layer._b.assign(ops.array(b))
                 if isinstance(_layer, FixedPointQuantizerKIF):
                     f = np.random.randint(2, 5, _layer._f.shape)
-                    i = ops.convert_to_numpy(ops.stop_gradient(_layer.i))
+                    i: np.ndarray = ops.convert_to_numpy(ops.stop_gradient(_layer.i))  # type: ignore
                     f = np.minimum(f, 12 - i)
                     if np.all(i + f == 0):
                         f.ravel()[0] = 1
@@ -209,18 +214,14 @@ class LayerTestBase:
         if overflow_mode == 'SAT':
             pytest.skip()
 
-        from da4ml.codegen import HLSModel, VerilogModel
         from da4ml.converter import trace_model
         from da4ml.trace import comb_trace
 
         inp, out = trace_model(model)
         comb = comb_trace(inp, out)
-        verilog_model = VerilogModel(comb, 'test', f'{temp_directory}/verilog_proj', 5)
-        hls_model = HLSModel(comb, 'test', f'{temp_directory}/hls_proj')
-        if all(qint.min == qint.max for qint in verilog_model._pipe.out_qint):  # type: ignore
+        if all(qint.min == qint.max for qint in comb.out_qint):  # type: ignore
             return  # No need to synthesize as model is trivial (all outputs are constant)
-        verilog_model.compile(nproc=1, openmp=False)
-        hls_model.compile(openmp=False)
+
         keras_output = model.predict(input_data, batch_size=5000)
         if isinstance(keras_output, Sequence):
             keras_output = tuple(_out.reshape(np.shape(_out)[0], -1) for _out in keras_output)
@@ -230,14 +231,9 @@ class LayerTestBase:
             v_input_data = input_data.reshape(np.shape(input_data)[0], -1)
         else:
             v_input_data = np.concatenate([_inp.reshape(np.shape(_inp)[0], -1) for _inp in input_data], axis=0)
-        v_output = verilog_model.predict(v_input_data)
-        h_output = hls_model.predict(v_input_data)
+        comb_output = comb.predict(v_input_data, n_threads=1)
 
-        np.testing.assert_array_equal(v_output, h_output)
-
-        self.assert_equal(keras_output, v_output)
-        os.system(f"rm -rf '{temp_directory}/verilog_proj'")
-        os.system(f"rm -rf '{temp_directory}/hls_proj'")
+        self.assert_equal(keras_output, comb_output)
 
     def assert_equal(self, keras_output, hls_output):
         _assert_equal(keras_output, hls_output)

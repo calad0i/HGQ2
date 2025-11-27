@@ -4,7 +4,8 @@ from keras import ops
 
 from hgq.config import QuantizerConfigScope
 from hgq.layers import QBatchNormDense, QDense, QEinsumDense, QEinsumDenseBatchnorm
-from tests.base import LayerTestBase
+
+from .base import LayerTestBase
 
 
 class TestDense(LayerTestBase):

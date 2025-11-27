@@ -5,7 +5,8 @@ from keras import ops
 
 from hgq.layers import QLinformerAttention, QMultiHeadAttention
 from hgq.quantizer.internal import FixedPointQuantizerKBI, FixedPointQuantizerKIF
-from tests.base import LayerTestBase
+
+from .base import LayerTestBase
 
 
 class TestMultiHeadAttention(LayerTestBase):

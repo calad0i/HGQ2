@@ -7,7 +7,8 @@ from keras import layers, ops
 from hgq.config import QuantizerConfigScope
 from hgq.layers import QLayerBase
 from hgq.layers.ops import QAdd, QAveragePow2, QDot, QEinsum, QMaximum, QMeanPow2, QMinimum, QMultiply, QSubtract, QSum
-from tests.base import LayerTestBase
+
+from .base import LayerTestBase
 
 
 class MergeOpsBase(LayerTestBase):

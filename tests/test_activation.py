@@ -4,7 +4,8 @@ from keras import ops
 
 from hgq.config import QuantizerConfigScope
 from hgq.layers import QSoftmax, QUnaryFunctionLUT
-from tests.base import LayerTestBase
+
+from .base import LayerTestBase
 
 
 def custom_fn(x):
