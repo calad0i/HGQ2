@@ -73,7 +73,7 @@ class QConvTBase(QDenseT):
     def call(self, x, training=None):
         if self.rank == 1:
             x = x[:, :, None]
-        x = ops.image.extract_patches(x, **self.im2col_params)
+        x = ops.image.extract_patches(x, **self.im2col_params)  # type: ignore
         if self.rank == 1:
             x = x[:, :, 0]
         return super().call(x, training=training)
@@ -99,7 +99,7 @@ class QConvTBase(QDenseT):
 
     def _build_im2col_params(self):
         if self.rank == 2:
-            self.im2col_params: im2col_params_t = {
+            self.im2col_params: im2col_params_t = {  # type: ignore
                 'size': self.kernel_size,
                 'strides': self.strides,
                 'dilation_rate': self.dilation_rate,
@@ -116,7 +116,7 @@ class QConvTBase(QDenseT):
                 strides = (1,) + self.strides
                 dilation_rate = (1,) + self.dilation_rate
 
-            self.im2col_params: im2col_params_t = {
+            self.im2col_params: im2col_params_t = {  # type: ignore
                 'size': size,
                 'strides': strides,
                 'dilation_rate': dilation_rate,
@@ -127,15 +127,8 @@ class QConvTBase(QDenseT):
             raise ValueError('Only 1D and 2D convolutions are supported.')
 
     def _compute_ebops(self, shape: tuple[int, ...]):
-        q_shape = shape + (self.ch_out,)
-        bits_in = self.iq.fbits_(q_shape)
-        bits_out = self.toq.fbits_(q_shape)
-
-        eff_lut5_count = ops.where(bits_in >= 5, 2 ** (bits_in - 5), 0.2 * bits_in)  # type: ignore
-
-        table_lut5s = ops.dot(ops.ravel(eff_lut5_count), ops.ravel(bits_out)) * 0.5  # type: ignore
-
-        return (table_lut5s + ops.sum(bits_out)) * self.parallelization_factor / self.n_parallel
+        q_shape = shape[:-1] + (self.n_in,)
+        return super()._compute_ebops(q_shape)
 
     @property
     def toq(self):
