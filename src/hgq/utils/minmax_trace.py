@@ -73,7 +73,7 @@ def trace_minmax(
     n_batch = len(data)  # type: ignore
     n_outputs = len(model.outputs)
 
-    with tqdm(total=n_batch, leave=False, disable=not use_pbar) as pbar:  # type: ignore
+    with tqdm(total=n_batch, leave=False, disable=not use_pbar, desc='Tracing min/max') as pbar:
         for i in range(n_batch):
             r = model(data[i][0], training=TrainingFlagWrapper('tracing'))
             if return_results:
