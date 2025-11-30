@@ -1,4 +1,6 @@
 from math import ceil
+from random import randint as rnd_uniform
+from random import shuffle as rnd_shuffle
 from warnings import warn
 
 import keras
@@ -7,8 +9,10 @@ from keras.utils import PyDataset
 
 
 class Dataset(PyDataset):
-    def __init__(self, x_set, y_set=None, batch_size=None, device: str = 'cpu:0', drop_last=False, **kwargs):
+    def __init__(self, x_set, y_set=None, batch_size=None, device: str = 'cpu:0', drop_last=False, shuffle=True, **kwargs):
         super().__init__(**kwargs)
+
+        self.shuffle = shuffle
 
         n_inp = 1
         if isinstance(x_set, (list, tuple)):
@@ -50,8 +54,8 @@ class Dataset(PyDataset):
             else:
                 self.y = None
 
-        self.batch_size = batch_size
         self.drop_last = drop_last
+        self.batch(batch_size)
 
     def __len__(self):
         assert self.batch_size is not None, 'batch_size must be set'
@@ -61,12 +65,36 @@ class Dataset(PyDataset):
 
     def batch(self, batch_size):
         self.batch_size = batch_size
+        if self.batch_size is not None:
+            self._reminder = self.data_len % self.batch_size
+            self._init_shift = rnd_uniform(0, self._reminder)
+        else:
+            self._reminder = 0
+            self._init_shift = 0
 
-    def __getitem__(self, idx):
+        if self.shuffle and self.batch_size is not None:
+            self._index_map = list(range(len(self)))
+            rnd_shuffle(self._index_map)
+        else:
+            self._index_map = None
+
+    def __getitem__(self, idx: int):
+        assert type(self.batch_size) is int, 'batch_size must be set before getting items'
+
         if idx < 0:
             idx = idx % len(self)
+        assert idx < len(self), f'Index out of range: {idx} >= {len(self)}'
+
+        if self._index_map is not None:
+            idx = self._index_map[idx]
+
         low = idx * self.batch_size
         high = min(low + self.batch_size, self.data_len)
+
+        if self.drop_last:
+            low += self._init_shift
+            high += self._init_shift
+
         if self.n_inp == 1:
             batch_x = self.x[low:high]  # type: ignore
         else:
@@ -79,3 +107,11 @@ class Dataset(PyDataset):
         else:
             batch_y = float('nan')
         return batch_x, batch_y
+
+    def on_epoch_end(self):
+        if self._index_map is not None:
+            rnd_shuffle(self._index_map)
+
+    def on_epoch_begin(self):
+        if self.drop_last:
+            self._init_shift = rnd_uniform(0, self._reminder)
