@@ -20,20 +20,20 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
         bias_regularizer=None,
         kernel_constraint=None,
         bias_constraint=None,
-        parallelization_factor=-1,
+        ebops_scaler: float = 1.0,
         kq_conf: None | QuantizerConfig = None,
         iq_conf: None | QuantizerConfig = None,
         bq_conf: None | QuantizerConfig = None,
         **kwargs,
     ):
-        kwargs = gather_vars_to_kwargs('self|kq_conf|bq_conf|parallelization_factor')
+        kwargs = gather_vars_to_kwargs('self|kq_conf|bq_conf|ebops_scaler')
         super().__init__(lora_rank=None, **kwargs)
 
         kq_conf = kq_conf or QuantizerConfig('default', 'weight')
         self._kq = Quantizer(kq_conf, name=f'{self.name}_kq')
         bq_conf = bq_conf or QuantizerConfig('default', 'bias')
         self._bq = None if bias_axes is None else Quantizer(bq_conf, name=f'{self.name}_bq')
-        self.parallelization_factor = parallelization_factor
+        self.ebops_scaler = ebops_scaler
 
     @property
     def kq(self):
@@ -72,9 +72,9 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
         ebops = ops.einsum(self.ebops_equation, bw_inp, bw_ker)
         if self.bq is not None:
             bw_bias = self.bq.bits_(ops.shape(self.bias))
-            size = ops.cast(ops.prod(shape), self.dtype)
+            size = ops.cast(ops.prod(self.full_output_shape[1:]), self.dtype)
             ebops = ebops + ops.mean(bw_bias) * size  # type: ignore
-        return ebops
+        return ebops * self.ebops_scaler  # type: ignore
 
     def get_config(self):
         config = super().get_config()

@@ -91,10 +91,10 @@ class QBaseConv(QLayerBaseSingleInput, BaseConv):
             bw_inp = ops.max(bw_inp, axis=reduce_axis_input)  # Keep only maximum per channel
             reduce_axis_kernel = tuple(range(0, self.rank))
             bw_ker = ops.sum(bw_ker, axis=reduce_axis_kernel)  # Keep only sum per channel
-            ebops = ops.sum(bw_inp[:, None] * bw_ker)
+            ebops = ops.sum(bw_inp[:, None] * bw_ker)  # type: ignore
 
         if self.bq is not None:
-            size = ops.cast(ops.prod(shape), self.dtype)
+            size = ops.cast(ops.prod(shape[:-1]) * self.filters, self.dtype)
             bw_bias = self.bq.bits_(ops.shape(self.bias))
             ebops = ebops + ops.mean(bw_bias) * size  # type: ignore
 

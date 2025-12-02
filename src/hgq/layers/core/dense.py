@@ -71,13 +71,13 @@ class QDense(QLayerBaseSingleInput, Dense):
         bw_inp = self.iq.bits_(shape)
         bw_ker = self.kq.bits_(ops.shape(self.kernel))
         ebops = ops.sum(ops.matmul(bw_inp, bw_ker))
-        ebops = ebops * self.parallelization_factor / self.n_parallel  # type: ignore
         if self.bq is not None:
             bw_bias = self.bq.bits_(ops.shape(self.bias))
-            size = ops.cast(ops.prod(shape), self.dtype)
+            out_size = ops.prod(shape[:-1]) * self.units
+            size = ops.cast(out_size, self.dtype)
             ebops = ebops + ops.mean(bw_bias) * size  # type: ignore
 
-        return ebops
+        return ebops * self.parallelization_factor / self.n_parallel  # type: ignore
 
     def get_config(self):
         config = super().get_config()
@@ -197,7 +197,7 @@ class QBatchNormDense(QDense):
         kernel = ops.cast(self.kernel, self.kernel.dtype)  # type: ignore
         fused_qkernel = self.kq(scaler[:, None] * kernel)  # type: ignore
 
-        offset = -ops.dot(mean, kernel)
+        offset = -ops.dot(mean, kernel)  # type: ignore
         fused_qbias = self.bq(self.bias + offset)
 
         return fused_qkernel, fused_qbias
@@ -209,10 +209,10 @@ class QBatchNormDense(QDense):
         if training and self.trainable:
             mean, var = ops.moments(inputs, self.reduction_axis, keepdims=False, synchronized=self.synchronized)  # type: ignore
             self.moving_mean.assign(
-                self.moving_mean * self.momentum + mean * (1.0 - self.momentum),
+                self.moving_mean * self.momentum + mean * (1.0 - self.momentum),  # type: ignore
             )
             self.moving_variance.assign(
-                self.moving_variance * self.momentum + var * (1.0 - self.momentum),
+                self.moving_variance * self.momentum + var * (1.0 - self.momentum),  # type: ignore
             )
             # _var, _mean = ops.cast(var, self.moving_variance.dtype), ops.cast(mean, self.moving_mean.dtype)
             # var = ops.stop_gradient(_var - var) + var

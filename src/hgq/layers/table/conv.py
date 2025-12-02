@@ -92,6 +92,7 @@ class QConvTBase(QDenseT):
         ch_in = input_shape[-1]
         n_in = ch_in * prod(self.kernel_size)
         _dense_in_shape = output_shape[:-1] + (n_in,)
+        self.output_shape = (1, *output_shape[1:])
 
         self._build_im2col_params()
 
@@ -127,7 +128,7 @@ class QConvTBase(QDenseT):
             raise ValueError('Only 1D and 2D convolutions are supported.')
 
     def _compute_ebops(self, shape: tuple[int, ...]):
-        q_shape = shape[:-1] + (self.n_in,)
+        q_shape = self.output_shape[:-1] + (self.n_in,)
         return super()._compute_ebops(q_shape)
 
     @property
