@@ -278,7 +278,7 @@ class FixedPointQuantizerKBI(FixedPointQuantizerBase):
             if training or training == 'tracing':  # noqa: E712, training maybe a special wrapper object
                 new_i = self.get_minimal_i(inputs)
                 if training:
-                    new_i = ops.stop_gradient(ops.maximum((self.i - self.i_decay_speed), new_i))  # type: ignore
+                    new_i = ops.stop_gradient(ops.maximum((self._i - self.i_decay_speed), new_i))  # type: ignore
                     if self._i.constraint is not None:
                         new_i = self._i.constraint(new_i)
                     self._i.assign(new_i)
@@ -405,7 +405,7 @@ class FixedPointQuantizerKIF(FixedPointQuantizerBase):
             if training or training == 'tracing':  # noqa: E712, training maybe a special wrapper object
                 _new_i = self.get_minimal_i(rinputs)
                 if training:
-                    new_i = ops.stop_gradient(ops.maximum((self.i - self.i_decay_speed), _new_i))  # type: ignore
+                    new_i = ops.stop_gradient(ops.maximum(self._i - self.i_decay_speed, _new_i))  # type: ignore
                     if self._i.constraint is not None:
                         _new_i = self._i.constraint(_new_i)
                     self._i.assign(new_i)
