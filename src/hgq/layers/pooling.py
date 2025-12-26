@@ -1,3 +1,5 @@
+from math import prod
+
 from keras import ops
 from keras.layers import (
     AveragePooling1D,
@@ -19,14 +21,30 @@ from .core.base import QLayerBaseSingleInput
 
 
 class QBasePooling(QLayerBaseSingleInput):
+    def __init__(self, *args, parallelization_factor=-1, **kwargs):
+        self.parallelization_factor = parallelization_factor
+        super().__init__(*args, **kwargs)
+
     def _compute_ebops(self, shape):
         bw_inp = self.iq.bits_(shape)
-        return ops.sum(bw_inp)
+        return ops.sum(bw_inp) * self.parallelization_factor / self.n_parallel  # type: ignore
 
     def call(self, inputs, training=None):
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
         return super().call(inputs)
+
+    def build(self, input_shape):
+        super().build(input_shape)
+        outputs_shape = self.compute_output_shape(input_shape)
+        if None in outputs_shape[1:]:
+            self.n_parallel = None
+        else:
+            self.n_parallel = prod(outputs_shape[1:-1]) if self.data_format == 'channels_last' else prod(outputs_shape[2:])
+
+        if self.parallelization_factor <= 0:
+            assert self.n_parallel is not None
+            self.parallelization_factor = self.n_parallel
 
 
 class QAveragePooling1D(QBasePooling, AveragePooling1D):
