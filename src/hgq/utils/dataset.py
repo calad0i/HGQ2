@@ -9,7 +9,7 @@ from keras.utils import PyDataset
 
 
 class Dataset(PyDataset):
-    def __init__(self, x_set, y_set=None, batch_size=None, device: str = 'cpu:0', drop_last=False, shuffle=True, **kwargs):
+    def __init__(self, x_set, y_set=None, batch_size=None, device: str = 'cpu:0', drop_last=False, shuffle=False, **kwargs):
         super().__init__(**kwargs)
 
         self.shuffle = shuffle

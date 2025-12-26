@@ -62,7 +62,7 @@ def trace_minmax(
     n_outputs = len(model.outputs)
 
     if not isinstance(data, PyDataset):
-        data = Dataset(data, batch_size=batch_size, device='none')
+        data = Dataset(data, batch_size=batch_size, device='none', shuffle=False)
 
     if reset:
         _reset_minmax(model)
