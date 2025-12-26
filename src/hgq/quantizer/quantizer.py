@@ -2,11 +2,12 @@ from typing import overload
 
 from keras import ops
 from keras.layers import Layer
-from keras.saving import deserialize_keras_object
+from keras.saving import deserialize_keras_object, register_keras_serializable
 
 from .config import QuantizerConfig, all_quantizer_keys
 
 
+@register_keras_serializable(package='hgq')
 class Quantizer(Layer):
     """The generic quantizer layer, wraps internal quantizers to provide a universal interface. Supports float, fixed-point (KBI, KIF) quantization. Can be initialized with a QuantizerConfig object or with the quantizer type and its parameters."""
 
