@@ -1,3 +1,5 @@
+from math import prod
+
 from keras import ops
 from keras.src.layers.convolutional.base_conv import BaseConv
 
@@ -57,6 +59,16 @@ class QBaseConv(QLayerBaseSingleInput, BaseConv):
             assert self.bq is not None
             self.bq.build(ops.shape(self.bias))
 
+        outputs_shape = self.compute_output_shape(input_shape)
+        if None in outputs_shape[1:]:
+            self.n_parallel = None
+        else:
+            self.n_parallel = prod(outputs_shape[1:-1]) if self.data_format == 'channels_last' else prod(outputs_shape[2:])
+
+        if self.parallelization_factor <= 0:
+            assert self.n_parallel is not None
+            self.parallelization_factor = self.n_parallel
+
     def call(self, inputs, training=None):
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
@@ -79,19 +91,18 @@ class QBaseConv(QLayerBaseSingleInput, BaseConv):
     def _compute_ebops(self, shape):
         bw_inp = self.iq.bits_(shape)
         bw_ker = self.kq.bits_(ops.shape(self.kernel))
-        if self.parallelization_factor < 0:
+        if self.parallelization_factor == self.n_parallel:
             ebops = ops.sum(self.convolution_op(bw_inp, bw_ker))
         else:
-            reduce_axis_kernel = tuple(range(0, self.rank + 1))
             if self.data_format == 'channels_last':
-                reduce_axis_input = reduce_axis_kernel
+                reduce_axis_input = tuple(range(0, self.rank + 1))
             else:
                 reduce_axis_input = (0,) + tuple(range(2, self.rank + 2))
 
             bw_inp = ops.max(bw_inp, axis=reduce_axis_input)  # Keep only maximum per channel
             reduce_axis_kernel = tuple(range(0, self.rank))
             bw_ker = ops.sum(bw_ker, axis=reduce_axis_kernel)  # Keep only sum per channel
-            ebops = ops.sum(bw_inp[:, None] * bw_ker)  # type: ignore
+            ebops = ops.sum(bw_inp[:, None] * bw_ker) * self.parallelization_factor  # type: ignore
 
         if self.bq is not None:
             size = ops.cast(ops.prod(shape[:-1]) * self.filters, self.dtype)
