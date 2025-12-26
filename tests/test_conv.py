@@ -42,14 +42,6 @@ class TestConv1D(LayerTestBase):
             return np.testing.assert_allclose(keras_output, hls_output, atol=1e-4)
         return np.testing.assert_allclose(keras_output, hls_output, atol=1e-6)
 
-    def test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, temp_directory: str):
-        super()._test_da4ml_conversion(
-            model=model,
-            input_data=input_data,
-            overflow_mode=overflow_mode,
-            temp_directory=temp_directory,
-        )
-
 
 class TestConv2D(LayerTestBase):
     layer_cls = QConv2D
@@ -92,11 +84,3 @@ class TestConv2D(LayerTestBase):
         if keras.backend.backend() == 'torch' and ch_out == 1:
             pytest.skip('Torch runtime error for unknown reason when ch_out is 1.')
         return super().test_training(model, input_data, overflow_mode)
-
-    def test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, temp_directory: str):
-        super()._test_da4ml_conversion(
-            model=model,
-            input_data=input_data,
-            overflow_mode=overflow_mode,
-            temp_directory=temp_directory,
-        )

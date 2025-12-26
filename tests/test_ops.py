@@ -138,7 +138,7 @@ class TestQAveragePow2(MergeOpsBase):
 #         np.testing.assert_allclose(r_hgq, r_keras)
 
 
-class TestSum(LayerTestBase):
+class TestQSum(LayerTestBase):
     layer_cls = QSum
     hls4ml_not_supported = True
 
@@ -170,7 +170,7 @@ class TestSum(LayerTestBase):
         np.testing.assert_allclose(r_hgq, r_keras)
 
 
-class TestMeanPow2(TestSum):
+class TestMeanPow2(TestQSum):
     layer_cls = QMeanPow2
     hls4ml_not_supported = True
 

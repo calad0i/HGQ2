@@ -67,14 +67,14 @@ class TestMultiHeadAttention(LayerTestBase):
                 if isinstance(_layer, FixedPointQuantizerKBI):
                     b = np.random.randint(4, 8, _layer._b.shape)
                     i = ops.convert_to_numpy(ops.stop_gradient(_layer.i))
-                    b = np.minimum(b, 12 - i)
+                    b = np.minimum(b, 12 - i)  # type: ignore
                     if np.all(b == 0):
                         b.ravel()[0] = 1
                     _layer._b.assign(ops.array(b))
                 if isinstance(_layer, FixedPointQuantizerKIF):
                     f = np.random.randint(2, 8, _layer._f.shape)
                     i = ops.convert_to_numpy(ops.stop_gradient(_layer.i))
-                    f = np.minimum(f, 12 - i)
+                    f = np.minimum(f, 12 - i)  # type: ignore
                     if np.all(i + f == 0):
                         f.ravel()[0] = 1
                     _layer._f.assign(ops.array(f))
@@ -86,7 +86,10 @@ class TestMultiHeadAttention(LayerTestBase):
 
     @pytest.fixture
     def input_data(self, input_shapes, N: int = 5000):
-        return tuple(np.random.randn(N, *shape).astype(np.float32) * 3 for shape in input_shapes)
+        eps = 2.0**-8
+        return tuple(
+            np.round((np.random.randn(N, *shape).astype(np.float32) * 3).clip(-8, 8 - eps) * 256) / 256 for shape in input_shapes
+        )
 
     def assert_equal(self, keras_output, hls_output):
         return np.testing.assert_allclose(keras_output, hls_output, atol=1e-6)

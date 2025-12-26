@@ -58,7 +58,7 @@ class PoolingTestBase(LayerTestBase):
             q_type=q_type,
         )
 
-    def test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, temp_directory: str):
+    def test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, q_type: str):
         layer = model.layers[-1]
 
         if isinstance(layer, (QAveragePooling2D, QAveragePooling1D)):
@@ -67,11 +67,11 @@ class PoolingTestBase(LayerTestBase):
             if log2(prod(layer.pool_size)) % 1 != 0:
                 pytest.skip('non-pow-2 pool size')
 
-        super()._test_da4ml_conversion(
+        super().test_da4ml_conversion(
             model=model,
             input_data=input_data,
             overflow_mode=overflow_mode,
-            temp_directory=temp_directory,
+            q_type=q_type,
         )
 
 

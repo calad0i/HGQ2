@@ -1,4 +1,3 @@
-import keras
 import numpy as np
 import pytest
 from keras import ops
@@ -57,11 +56,3 @@ class TestBatchNorm(LayerTestBase):
 
         np.allclose(hgq_output_np, ref_output_np, atol=1e-6)
         np.allclose(hgq_output_test_np, ref_output_np)
-
-    def test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, temp_directory: str):
-        super()._test_da4ml_conversion(
-            model=model,
-            input_data=input_data,
-            overflow_mode=overflow_mode,
-            temp_directory=temp_directory,
-        )

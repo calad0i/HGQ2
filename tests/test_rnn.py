@@ -1,5 +1,3 @@
-import keras
-import numpy as np
 import pytest
 from keras import layers, ops
 
@@ -11,6 +9,8 @@ from .base import LayerTestBase
 
 
 class RNNTestBase(LayerTestBase):
+    da4ml_not_supported = True
+    hls4ml_not_supported = True
     layer_cls = QRNN
     keras_layer_cls = layers.RNN
 
@@ -25,11 +25,6 @@ class RNNTestBase(LayerTestBase):
             'strides': strides,
             'padding': padding,
         }
-
-    def test_hls4ml_conversion(
-        self, model: keras.Model, input_data: np.ndarray, temp_directory: str, use_parallel_io: bool, q_type: str
-    ):
-        pytest.skip('hls4ml support not yet ready')
 
     def test_behavior(self, input_data, layer_kwargs):
         raise NotImplementedError()

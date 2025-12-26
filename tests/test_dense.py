@@ -9,7 +9,6 @@ from .base import LayerTestBase
 
 
 class TestDense(LayerTestBase):
-    da4ml_not_supported = False
     layer_cls = QDense
     keras_layer_cls = keras.layers.Dense
 
@@ -28,14 +27,6 @@ class TestDense(LayerTestBase):
     @pytest.fixture
     def layer_kwargs(self, units, activation):
         return {'units': units, 'activation': activation}
-
-    def test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, temp_directory: str):
-        super()._test_da4ml_conversion(
-            model=model,
-            input_data=input_data,
-            overflow_mode=overflow_mode,
-            temp_directory=temp_directory,
-        )
 
     def test_behavior(self, input_data, layer_kwargs):
         with QuantizerConfigScope(default_q_type='dummy'):
@@ -93,14 +84,6 @@ class TestEinsumDense(LayerTestBase):
     @pytest.fixture(params=[True])
     def use_parallel_io(self, request) -> bool:
         return request.param
-
-    def test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, temp_directory: str):
-        super()._test_da4ml_conversion(
-            model=model,
-            input_data=input_data,
-            overflow_mode=overflow_mode,
-            temp_directory=temp_directory,
-        )
 
 
 class TestEinsumDenseBatchnorm(TestEinsumDense):

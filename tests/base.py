@@ -29,13 +29,13 @@ class CtxGlue:
 
 def _assert_equal(a: np.ndarray | tuple[np.ndarray], b: np.ndarray | tuple[np.ndarray]):
     if isinstance(a, Sequence):
-        a = np.concatenate([arr.reshape(arr.shape[0], -1) for arr in a], axis=1)
+        a = np.concatenate([arr.reshape(arr.shape[0], -1) for arr in a], axis=1).ravel()
     else:
-        a = a.reshape(a.shape[0], -1)
+        a = a.ravel()
     if isinstance(b, Sequence):
-        b = np.concatenate([arr.reshape(arr.shape[0], -1) for arr in b], axis=1)
+        b = np.concatenate([arr.reshape(arr.shape[0], -1) for arr in b], axis=1).ravel()
     else:
-        b = b.reshape(b.shape[0], -1)
+        b = b.ravel()
 
     mismatches = np.where(a != b)[0]
 
@@ -56,6 +56,7 @@ class LayerTestBase:
     layer_cls: type[QLayerBase] = QLayerBase
     custom_objects = {}
     hls4ml_not_supported = False
+    da4ml_not_supported = False
 
     @pytest.fixture(params=[True, False])
     def use_parallel_io(self, request) -> bool:
@@ -88,7 +89,7 @@ class LayerTestBase:
         )
         scope_a = QuantizerConfigScope(
             default_q_type=q_type,
-            place='datalane',
+            place=('datalane', 'table'),
             heterogeneous_axis=heterogeneous_axis,
             homogeneous_axis=homogeneous_axis,
             overflow_mode=overflow_mode,
@@ -111,8 +112,8 @@ class LayerTestBase:
     def input_data(self, input_shapes, N: int = 5000) -> np.ndarray | tuple[np.ndarray, ...]:
         """Generate test input data"""
         if isinstance(input_shapes[0], int):
-            return np.random.randn(N, *input_shapes).astype(np.float32).clip(-5, 5)
-        dat = tuple(np.random.randn(N, *shape).astype(np.float32).clip(-5, 5) for shape in input_shapes)  # type: ignore
+            return np.round(np.random.randn(N, *input_shapes).astype(np.float32).clip(-5, 5) * 256) / 256
+        dat = tuple(np.round(np.random.randn(N, *shape).astype(np.float32).clip(-5, 5) * 256) / 256 for shape in input_shapes)  # type: ignore
         if len(dat) == 1:
             return dat[0]
         return dat
@@ -194,10 +195,11 @@ class LayerTestBase:
             hls_config={'Model': {'Precision': 'ap_fixed<1,0>', 'ReuseFactor': 1, 'Strategy': 'distributed_arithmetic'}},
         )
 
-        hls_model.compile()
         if q_type == 'kif':
             keras_output_0 = model.predict(input_data, batch_size=5000)
             self.assert_equal(keras_output_0, trace_keras_output_0)
+
+        hls_model.compile()
 
         if isinstance(input_data, Sequence):
             input_data = tuple(_input_data * 2 for _input_data in input_data)  # type: ignore
@@ -210,27 +212,38 @@ class LayerTestBase:
 
         os.system(f"rm -rf '{temp_directory}/hls4ml_prj'")
 
-    def _test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, temp_directory: str):
-        if overflow_mode == 'SAT':
-            pytest.skip()
+    def test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, q_type: str):
+        if self.da4ml_not_supported:
+            pytest.skip('No synth test')
+
+        trace_keras_output = trace_minmax(model, input_data, return_results=True, verbose=2)
+
+        keras_output = model.predict(input_data, batch_size=5000)
+
+        if q_type == 'kif':
+            self.assert_equal(keras_output, trace_keras_output)
 
         from da4ml.converter import trace_model
         from da4ml.trace import comb_trace
 
-        inp, out = trace_model(model)
+        if overflow_mode == 'SAT':
+            inp, out = trace_model(model, inputs_kif=(1, 3, 8))
+        else:
+            inp, out = trace_model(model)
+
         comb = comb_trace(inp, out)
         if all(qint.min == qint.max for qint in comb.out_qint):  # type: ignore
             return  # No need to synthesize as model is trivial (all outputs are constant)
 
         keras_output = model.predict(input_data, batch_size=5000)
         if isinstance(keras_output, Sequence):
-            keras_output = tuple(_out.reshape(np.shape(_out)[0], -1) for _out in keras_output)
+            keras_output = np.concatenate([_out.reshape(np.shape(_out)[0], -1) for _out in keras_output], axis=1)
         else:
             keras_output = keras_output.reshape(np.shape(keras_output)[0], -1)
         if isinstance(input_data, np.ndarray):
             v_input_data = input_data.reshape(np.shape(input_data)[0], -1)
         else:
-            v_input_data = np.concatenate([_inp.reshape(np.shape(_inp)[0], -1) for _inp in input_data], axis=0)
+            v_input_data = np.concatenate([_inp.reshape(np.shape(_inp)[0], -1) for _inp in input_data], axis=1)
         comb_output = comb.predict(v_input_data, n_threads=1)
 
         self.assert_equal(keras_output, comb_output)
