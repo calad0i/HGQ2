@@ -24,9 +24,10 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
         kq_conf: None | QuantizerConfig = None,
         iq_conf: None | QuantizerConfig = None,
         bq_conf: None | QuantizerConfig = None,
+        parallelization_factor: int = -1,  # not used yet
         **kwargs,
     ):
-        kwargs = gather_vars_to_kwargs('self|kq_conf|bq_conf|ebops_scaler')
+        kwargs = gather_vars_to_kwargs('self|kq_conf|bq_conf|ebops_scaler|parallelization_factor')
         super().__init__(lora_rank=None, **kwargs)
 
         kq_conf = kq_conf or QuantizerConfig('default', 'weight')
@@ -34,6 +35,7 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
         bq_conf = bq_conf or QuantizerConfig('default', 'bias')
         self._bq = None if bias_axes is None else Quantizer(bq_conf, name=f'{self.name}_bq')
         self.ebops_scaler = ebops_scaler
+        self.parallelization_factor = parallelization_factor
 
     @property
     def kq(self):
