@@ -63,6 +63,7 @@ class QSoftmax(QLayerBaseSingleInput):
             exp_oq_conf.config['k0'] = 0
 
         # hls4ml only supports the following configurations
+        # In general good choice for tables, enforcing globally
         inv_oq_conf.config['overflow_mode'] = 'SAT'  # type: ignore
         inv_oq_conf.config['round_mode'] = 'RND_CONV'  # type: ignore
         exp_oq_conf.config['overflow_mode'] = 'SAT'  # type: ignore

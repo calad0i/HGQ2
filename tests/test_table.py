@@ -62,7 +62,7 @@ class TestDenseT(TableTestBase):
 class TestConvT1D(TableTestBase):
     layer_cls = QConvT1D
 
-    @pytest.fixture(params=[4, 8])
+    @pytest.fixture(params=[8, 12])
     def ch_out(self, request):
         return request.param
 
@@ -92,7 +92,7 @@ class TestConvT1D(TableTestBase):
 class TestConvT2D(TableTestBase):
     layer_cls = QConvT2D
 
-    @pytest.fixture(params=[4, 8])
+    @pytest.fixture(params=[8, 12])
     def ch_out(self, request):
         return request.param
 

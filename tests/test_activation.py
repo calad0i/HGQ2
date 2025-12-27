@@ -18,7 +18,7 @@ class TestQUnaryFunctionLUT(LayerTestBase):
 
     @pytest.fixture(params=['sigmoid', 'tanh', custom_fn])
     def layer_kwargs(self, request):
-        return {'activation': request.param}
+        return {'activation': request.param, 'allow_heterogeneous_table': False}
 
     @pytest.fixture
     def input_shapes(self):
