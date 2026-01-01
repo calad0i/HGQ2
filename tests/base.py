@@ -29,27 +29,24 @@ class CtxGlue:
 
 def _assert_equal(a: np.ndarray | tuple[np.ndarray], b: np.ndarray | tuple[np.ndarray]):
     if isinstance(a, Sequence):
-        a = np.concatenate([arr.reshape(arr.shape[0], -1) for arr in a], axis=1).ravel()
-    else:
-        a = a.ravel()
+        a = np.concatenate([arr.reshape(arr.shape[0], -1) for arr in a], axis=1)
     if isinstance(b, Sequence):
-        b = np.concatenate([arr.reshape(arr.shape[0], -1) for arr in b], axis=1).ravel()
-    else:
-        b = b.ravel()
+        b = np.concatenate([arr.reshape(arr.shape[0], -1) for arr in b], axis=1)
 
-    mismatches = np.where(a != b)[0]
-    abs_mismatch = np.abs(a - b)[mismatches]
-    rel_mismatch = abs_mismatch / (np.abs(a[mismatches]) + 1e-8)
+    diff = a - b
+    mismatches = np.where(diff.ravel() != 0)[0]
+    abs_mismatch = np.abs(diff.ravel())[mismatches]
+    rel_mismatch = abs_mismatch / (np.abs(a.ravel()[mismatches]) + 1e-8)
     sig_mismatch = (rel_mismatch > 0.1) & (abs_mismatch > 1e-3)
     r_mismatch = len(mismatches) / len(a)
 
     if not np.any(sig_mismatch) and r_mismatch < 1e-4:
         return  # Ignore small mismatches
 
-    a_sample = a[mismatches[:5]]
-    b_sample = b[mismatches[:5]]
-    msg = f"""Non-trivial keras - hw mismatch. {len(mismatches)} out of {len(a)} samples are different
-    {len(sig_mismatch)} significant mismatches (abs > 1e-3 and rel > 10%)
+    a_sample = a.ravel()[mismatches[:5]]
+    b_sample = b.ravel()[mismatches[:5]]
+    msg = f"""Non-trivial keras - hw mismatch. {len(mismatches)} out of {a.size} samples are different
+    {np.sum(sig_mismatch)} significant mismatches (abs > 1e-3 and rel > 10%)
     Sample:
     {a_sample}
     vs
@@ -57,8 +54,8 @@ def _assert_equal(a: np.ndarray | tuple[np.ndarray], b: np.ndarray | tuple[np.nd
     """
 
     if np.any(sig_mismatch):
-        sa_sample = a[mismatches[sig_mismatch][:5]]
-        sb_sample = b[mismatches[sig_mismatch][:5]]
+        sa_sample = a.ravel()[mismatches[sig_mismatch][:5]]
+        sb_sample = b.ravel()[mismatches[sig_mismatch][:5]]
         msg += f'\nSignificant mismatches sample:\n{sa_sample}\nvs\n{sb_sample}'
 
     raise AssertionError(msg)
