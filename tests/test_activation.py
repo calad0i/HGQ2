@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from keras import ops
+from keras import Model, ops
 
 from hgq.config import QuantizerConfigScope
 from hgq.layers import QSoftmax, QUnaryFunctionLUT
@@ -28,14 +28,14 @@ class TestQUnaryFunctionLUT(LayerTestBase):
 class TestSoftmax(LayerTestBase):
     layer_cls = QSoftmax
 
-    @pytest.fixture(params=[-1, (-2, -1)])
+    @pytest.fixture(params=[-1, (-2, -1), -2])
     def axis(self, request):  # return request.param
         return request.param
 
     @pytest.fixture(params=[(8,), (4, 4)])
     def input_shapes(self, request, axis):
-        if axis == (-2, -1) and request.param != (4, 4):
-            pytest.skip('Only support 2D input with axis=(-2, -1)')
+        if (axis == (-2, -1) or axis == -2) and request.param != (4, 4):
+            pytest.xfail('axis=-2 with 1d input makes no sense')
         return request.param
 
     @pytest.fixture(params=[True, False])
@@ -44,9 +44,6 @@ class TestSoftmax(LayerTestBase):
 
     @pytest.fixture
     def layer_kwargs(self, axis, stable, use_parallel_io):
-        if not use_parallel_io and axis != -1:
-            pytest.skip('hls4ml only support axis=-1 with io_stream')
-
         return {
             'axis': axis,
             'stable': stable,
@@ -69,3 +66,10 @@ class TestSoftmax(LayerTestBase):
         ref_output_np: np.ndarray = ops.convert_to_numpy(ref_output)  # type: ignore
 
         np.testing.assert_allclose(hgq_output_np, ref_output_np, atol=1e-6)
+
+    def test_hls4ml_conversion(  # type: ignore
+        self, model: Model, input_data, temp_directory: str, use_parallel_io: bool, q_type: str, axis: int
+    ):
+        if not use_parallel_io and axis != -1:
+            pytest.skip('hls4ml only support axis=-1 with io_stream')
+        return super().test_hls4ml_conversion(model, input_data, temp_directory, use_parallel_io, q_type)
