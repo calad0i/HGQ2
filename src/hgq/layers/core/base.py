@@ -99,7 +99,7 @@ class QLayerMeta(ABCMeta):
                             tensors = args
                         shapes = ((1,) + shape[1:] for shape in map(ops.shape, tensors))
                         if self.enable_ebops:
-                            ebops = self._compute_ebops(*shapes)
+                            ebops = self._compute_ebops(*shapes) * self.ebops_factor
                             self._ebops.assign(ops.cast(ebops, self._ebops.dtype))
                             self.add_loss(ebops * self.beta)
                     if not self.enable_oq or self.__output_quantizer_handled__:
@@ -136,6 +136,7 @@ class QLayerBase(Layer, metaclass=QLayerMeta):
         enable_oq: bool | None = None,
         enable_iq: bool | None = None,
         oq_conf: QuantizerConfig | None = None,
+        ebops_factor: float = 1.0,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -148,6 +149,7 @@ class QLayerBase(Layer, metaclass=QLayerMeta):
             enable_ebops = global_config['enable_ebops'] and self.enable_iq
         self._enable_ebops = enable_ebops
         self._beta0 = beta0
+        self.ebops_factor = ebops_factor
 
         if self.enable_oq:
             oq_conf = oq_conf or QuantizerConfig('default', 'datalane')
@@ -219,6 +221,7 @@ class QLayerBase(Layer, metaclass=QLayerMeta):
         config.update(
             {
                 'enable_ebops': self.enable_ebops,
+                'ebops_factor': self.ebops_factor,
                 'beta0': self._beta0,
                 'enable_oq': self.enable_oq,
                 'enable_iq': self.enable_iq,
