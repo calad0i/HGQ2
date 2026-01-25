@@ -3,7 +3,7 @@ import pytest
 from keras import Model, ops
 
 from hgq.config import QuantizerConfigScope
-from hgq.layers import QSoftmax, QUnaryFunctionLUT
+from hgq.layers import QAffinedUnaryFunctionLUT, QSoftmax, QUnaryFunctionLUT
 
 from .base import LayerTestBase
 
@@ -23,6 +23,11 @@ class TestQUnaryFunctionLUT(LayerTestBase):
     @pytest.fixture
     def input_shapes(self):
         return (8,)
+
+
+class TestQAffinedUnaryFunctionLUT(TestQUnaryFunctionLUT):
+    hls4ml_not_supported = True
+    layer_cls = QAffinedUnaryFunctionLUT
 
 
 class TestSoftmax(LayerTestBase):
