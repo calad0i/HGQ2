@@ -2,10 +2,10 @@ from typing import Literal
 
 from keras import ops
 
-from ..quantizer.config import QuantizerConfig
-from ..utils.misc import gather_vars_to_kwargs
-from .core.einsum_dense import QEinsumDense
-from .multi_head_attention import QMultiHeadAttention
+from ...quantizer.config import QuantizerConfig
+from ...utils.misc import gather_vars_to_kwargs
+from ..core.einsum_dense import QEinsumDense
+from .mha import QMultiHeadAttention
 
 
 class QLinformerAttention(QMultiHeadAttention):

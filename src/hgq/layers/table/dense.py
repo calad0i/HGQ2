@@ -66,6 +66,19 @@ class QDenseT(QLayerBaseSingleInput):
                     bias_axes=bias_axes,
                 )
             )
+            # layers.extend(
+            #     [
+            #         keras.layers.EinsumDense(
+            #             '...iod,iodD->...ioD',
+            #             _shape,
+            #             bias_axes=bias_axes,
+            #         ),
+            #         # keras.layers.Reshape((n_in * self.n_out * self.d_hl,)),
+            #         keras.layers.BatchNormalization(axis=-1),
+            #         # keras.layers.Reshape((n_in, self.n_out, self.d_hl)),
+            #         keras.layers.Activation(self.subnn_activation),
+            #     ]
+            # )
         bias_axes = 'io' if self.use_bias else None
         l_out = keras.layers.EinsumDense('...iod,iod->...io', (n_in, self.n_out), 'linear', bias_axes=bias_axes)
         layers.append(l_out)

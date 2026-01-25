@@ -7,11 +7,11 @@ from keras.initializers import Constant
 from keras.layers import Dropout, MultiHeadAttention
 from keras.src.layers.attention.multi_head_attention import _build_attention_equation, _build_proj_equation
 
-from ..quantizer.config import QuantizerConfig
-from ..utils.misc import gather_vars_to_kwargs
-from .core.base import QLayerBase
-from .core.einsum_dense import QEinsumDense
-from .softmax import QSoftmax
+from ...quantizer.config import QuantizerConfig
+from ...utils.misc import gather_vars_to_kwargs
+from ..core.base import QLayerBase
+from ..core.einsum_dense import QEinsumDense
+from ..softmax import QSoftmax
 
 
 def _get_output_shape(output_rank, known_last_dims, input_shape):
