@@ -91,18 +91,8 @@ class QBaseConv(QLayerBaseSingleInput, BaseConv):
     def _compute_ebops(self, shape):
         bw_inp = self.iq.bits_(shape)
         bw_ker = self.kq.bits_(ops.shape(self.kernel))
-        if self.parallelization_factor == self.n_parallel:
-            ebops = ops.sum(self.convolution_op(bw_inp, bw_ker))
-        else:
-            if self.data_format == 'channels_last':
-                reduce_axis_input = tuple(range(0, self.rank + 1))
-            else:
-                reduce_axis_input = (0,) + tuple(range(2, self.rank + 2))
-
-            bw_inp = ops.max(bw_inp, axis=reduce_axis_input)  # Keep only maximum per channel
-            reduce_axis_kernel = tuple(range(0, self.rank))
-            bw_ker = ops.sum(bw_ker, axis=reduce_axis_kernel)  # Keep only sum per channel
-            ebops = ops.sum(bw_inp[:, None] * bw_ker) * self.parallelization_factor  # type: ignore
+        ebops = ops.sum(self.convolution_op(bw_inp, bw_ker))
+        ebops *= self.parallelization_factor / self.n_parallel
 
         if self.bq is not None:
             size = ops.cast(ops.prod(shape[:-1]) * self.filters, self.dtype)
@@ -234,10 +224,10 @@ class QConv3D(QBaseConv):
         self,
         filters,
         kernel_size,
-        strides=(1, 1),
+        strides=(1, 1, 1),
         padding='valid',
         data_format=None,
-        dilation_rate=(1, 1),
+        dilation_rate=(1, 1, 1),
         groups=1,
         activation=None,
         use_bias=True,
