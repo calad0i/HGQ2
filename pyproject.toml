@@ -41,6 +41,8 @@ optional-dependencies.test = [
 ]
 urls.repository = "https://github.com/calad0i/HGQ2"
 
+entry-points."dais_tracer.plugins".keras = "hgq._dais_tracer.main:HGQ2DAISTracer"
+
 [tool.setuptools]
 packages = [ "hgq", "qkeras" ]
 include-package-data = true
@@ -63,7 +65,7 @@ format.skip-magic-trailing-comma = false
 format.docstring-code-line-length = 130
 format.docstring-code-format = true
 lint.select = [ "E", "F", "F401", "I", "W" ]
-lint.ignore = [ "E501", "F403", "F405" ]
+lint.ignore = [ "E501", "E741", "F403", "F405" ]
 lint.explicit-preview-rules = true
 lint.fixable = [ "ALL" ]
 lint.unfixable = [  ]
