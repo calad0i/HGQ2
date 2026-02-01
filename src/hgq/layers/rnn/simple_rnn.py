@@ -363,6 +363,10 @@ class QRNN(RNN, metaclass=QLayerMeta):
         config = deserialize_keras_object(config, custom_objects=custom_objects)
         return super().from_config(config)
 
+    @property
+    def ebops_factor(self):
+        return self.cell.ebops_factor
+
 
 @register_keras_serializable(package='hgq')
 class QSimpleRNN(QRNN, SimpleRNN):
