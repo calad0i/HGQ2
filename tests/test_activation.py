@@ -52,6 +52,7 @@ class TestSoftmax(LayerTestBase):
         return {
             'axis': axis,
             'stable': stable,
+            'enable_iq': True,
         }
 
     def test_behavior(self, input_data, layer_kwargs):

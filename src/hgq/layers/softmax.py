@@ -4,6 +4,7 @@ from math import prod
 from keras import ops
 from keras.src import backend
 
+from ..config.layer import global_config
 from ..quantizer import QuantizerConfig
 from .activation import QUnaryFunctionLUT
 from .core import QLayerBaseSingleInput
@@ -15,6 +16,7 @@ class QSoftmax(QLayerBaseSingleInput):
         axis: int | Sequence[int] | None = None,
         iq_conf: None | QuantizerConfig = None,
         stable=True,
+        enable_iq: None | bool = False,
         exp_iq_conf: None | QuantizerConfig = None,
         exp_oq_conf: None | QuantizerConfig = None,
         inv_iq_conf: None | QuantizerConfig = None,
@@ -22,6 +24,7 @@ class QSoftmax(QLayerBaseSingleInput):
         allow_heterogeneous_table: bool = False,
         input_scaler: float = 1.0,
         parallelization_factor: int = -1,
+        enable_ebops: None | bool = None,
         **kwargs,
     ):
         # Keras h5 loader pops axis silent when it is a list longer than 1.
@@ -30,7 +33,11 @@ class QSoftmax(QLayerBaseSingleInput):
         self.axes = axes or (tuple(axis) if isinstance(axis, Sequence) else (axis,) if axis is not None else (-1,))
 
         self.supports_masking = True
-        super().__init__(iq_conf=iq_conf, **kwargs)  # type: ignore
+
+        if enable_ebops is None:
+            enable_ebops = global_config['enable_ebops']
+
+        super().__init__(iq_conf=iq_conf, enable_iq=enable_iq, enable_ebops=enable_ebops, **kwargs)  # type: ignore
         self.stable = stable
         self.parallelization_factor = parallelization_factor
 
@@ -128,12 +135,15 @@ class QSoftmax(QLayerBaseSingleInput):
         n_instance = self.parallelization_factor if self.parallelization_factor > 0 else max_instance
         factor = n_instance / max_instance
 
-        inp_bits = self.iq.bits_(shape)
+        inp_bits = self.iq.bits_(shape) if self.enable_iq else 0
         exp_bits = self.exp_table.oq.bits_(shape)
         inv_bits = self.inv_table.oq.bits_(accum_shape)
 
         if self.stable:
-            substract_ebops = ops.sum(inp_bits)  # type: ignore # TODO: better ebops cost model for add and max
+            if self.enable_iq:
+                substract_ebops = ops.sum(inp_bits)
+            else:
+                substract_ebops = ops.sum(self.exp_table.iq.bits_(shape))
         else:
             substract_ebops = 0
 
