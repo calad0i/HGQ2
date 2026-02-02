@@ -39,8 +39,8 @@ class TestSoftmax(LayerTestBase):
 
     @pytest.fixture(params=[(8,), (4, 4)])
     def input_shapes(self, request, axis):
-        if (axis == (-2, -1) or axis == -2) and request.param != (4, 4):
-            pytest.xfail('axis=-2 with 1d input makes no sense')
+        if axis != -1 and len(request.param) == 1:
+            pytest.xfail('Invalid axis config for shape')
         return request.param
 
     @pytest.fixture(params=[True, False])
@@ -61,8 +61,8 @@ class TestSoftmax(LayerTestBase):
 
         axis = layer_kwargs['axis']
         hgq_output = softmax(input_data)
-        if axis == -1:
-            ref_output = ops.nn.softmax(input_data, axis=-1)
+        if not isinstance(axis, tuple):
+            ref_output = ops.nn.softmax(input_data, axis=axis)
         else:
             shape = input_data.shape
             input_data = ops.reshape(input_data, shape[:-2] + (-1,))
