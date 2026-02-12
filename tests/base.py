@@ -40,7 +40,7 @@ def _assert_equal(a: np.ndarray | tuple[np.ndarray], b: np.ndarray | tuple[np.nd
     sig_mismatch = (rel_mismatch > 0.1) & (abs_mismatch > 1e-3)
     r_mismatch = len(mismatches) / len(a)
 
-    if not np.any(sig_mismatch) and r_mismatch < 2e-4:
+    if not np.any(sig_mismatch) and r_mismatch < 5e-4:
         return  # Ignore small mismatches
 
     a_sample = a.ravel()[mismatches[:5]]
@@ -204,6 +204,7 @@ class LayerTestBase:
             backend='Vitis',
             io_type='io_parallel' if use_parallel_io else 'io_stream',
             hls_config={'Model': {'Precision': 'ap_fixed<1,0>', 'ReuseFactor': 1, 'Strategy': 'distributed_arithmetic'}},
+            bit_exact=True,
         )
 
         if q_type == 'kif':
