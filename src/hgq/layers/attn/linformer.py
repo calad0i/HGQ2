@@ -29,7 +29,7 @@ class QLinformerAttention(QMultiHeadAttention):
         kernel_constraint=None,
         bias_constraint=None,
         seed=None,
-        fuse: Literal['none', 'qkv', 'kv'] = 'none',
+        fuse: Literal['none'] = 'none',
         qkvo_iq_conf: QuantizerConfig | None = None,
         qkvo_kq_conf: QuantizerConfig | None = None,
         qkvo_bq_conf: QuantizerConfig | None = None,
@@ -45,11 +45,14 @@ class QLinformerAttention(QMultiHeadAttention):
         parallelization_factor=-1,
         **kwargs,
     ):
+        if fuse != 'none':
+            raise ValueError(f'Only fuse="none" can be used for QLinformerAttention, but got fuse="{fuse}".')
         kwargs = gather_vars_to_kwargs('self|lin_kv_proj_dim')
         self._kv_proj_dim = (lin_kv_proj_dim,) if isinstance(lin_kv_proj_dim, int) else tuple(lin_kv_proj_dim)
         super().__init__(**kwargs)
 
-    def build(self, query_shape, value_shape, key_shape=None):
+    def build(self, query_shape, value_shape=None, key_shape=None):
+        value_shape = value_shape or query_shape
         key_shape = key_shape or value_shape
         key_rank = len(key_shape)
         value_rank = len(value_shape)
@@ -99,7 +102,7 @@ class QLinformerAttention(QMultiHeadAttention):
     def call(
         self,
         query,
-        value,
+        value=None,
         key=None,
         query_mask=None,
         value_mask=None,
@@ -110,6 +113,7 @@ class QLinformerAttention(QMultiHeadAttention):
         use_causal_mask=False,
     ):
         assert use_causal_mask is False, 'Causal mask is not supported in QLinformerAttention.'
+        value = value if value is not None else query
         key = key if key is not None else value
         key = self._lin_k_proj(key, training=training)
         value = self._lin_v_proj(value, training=training)
@@ -143,7 +147,7 @@ class QLinformerAttention(QMultiHeadAttention):
         )
         return round(ops.convert_to_numpy(ebops).item())  # type: ignore
 
-    def _compute_ebops(self, query_shape, value_shape, key_shape=None):
+    def _compute_ebops(self, query_shape, value_shape=None, key_shape=None):
         return super()._compute_ebops(query_shape, self._value_shape_proj, key_shape=self._key_shape_proj)
 
     def get_config(self):

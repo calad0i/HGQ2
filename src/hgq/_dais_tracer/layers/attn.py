@@ -7,7 +7,7 @@ from hgq.layers import (
     QMultiHeadAttention,
 )
 
-from ._base import ReplayOperationBase, mirror_quantizer
+from ._base import ReplayOperationBase, mirror_quantizer, to_np_arr
 from .activation import ReplayQSoftmax
 from .dense import ReplayQDense
 
@@ -67,6 +67,67 @@ def _compute_attention(op: QMultiHeadAttention, query, key, value, attention_mas
     return attention_output, attention_scores
 
 
+def _fused_qkv_proj(query: FixedVariableArray, key: FixedVariableArray, value: FixedVariableArray, op: QMultiHeadAttention):
+    query_qk, query_qb = op.query_dense.qkernel, op.query_dense.qbias
+    query_qk = to_np_arr(query_qk)
+    query_qb = to_np_arr(query_qb) if query_qb is not None else np.zeros_like(query_qk[0])
+
+    key_qk, key_qb = op.key_dense.qkernel, op.key_dense.qbias
+    key_qk = to_np_arr(key_qk)
+    key_qb = to_np_arr(key_qb) if key_qb is not None else np.zeros_like(key_qk[0])
+
+    value_qk, value_qb = op.value_dense.qkernel, op.value_dense.qbias
+    value_qk = to_np_arr(value_qk)
+    value_qb = to_np_arr(value_qb) if value_qb is not None else np.zeros_like(value_qk[0])
+
+    if op._fuse == 'qkv':
+        assert query is key and key is value, 'Fused QKV projection only works when query, key and value are the same.'
+        iq = op.query_dense.iq if op.enable_iq else None
+        query = mirror_quantizer(iq, query) if iq is not None else query
+
+        to_QKV_kernel = np.concatenate([query_qk, key_qk, value_qk], axis=-1)
+        to_QKV_bias = np.concatenate([query_qb, key_qb, value_qb], axis=-1)
+
+        QKV = einsum(op.query_dense.equation, query[None], to_QKV_kernel)[0] + to_QKV_bias
+        Q, K, V = np.split(QKV, 3, axis=-1)  # type: ignore
+
+        Q = mirror_quantizer(op._query_dense.oq, Q) if op._query_dense.oq else Q
+        K = mirror_quantizer(op._key_dense.oq, K) if op._key_dense.enable_oq else K
+        V = mirror_quantizer(op._value_dense.oq, V) if op._value_dense.enable_oq else V
+
+    elif op._fuse == 'kv':
+        assert key is value, 'Fused KV projection only works when key and value are the same.'
+        iq = op._key_dense.iq if op.enable_iq else None
+        key = mirror_quantizer(iq, key) if iq is not None else key
+
+        to_KV_kernel = np.concatenate([key_qk, value_qk], axis=-1)
+        to_KV_bias = np.concatenate([key_qb, value_qb], axis=-1)
+        KV = einsum(op._key_dense.equation, key[None], to_KV_kernel)[0] + to_KV_bias
+        K, V = np.split(KV, 2, axis=-1)  # type: ignore
+
+        K = mirror_quantizer(op._key_dense.oq, K) if op._key_dense.enable_oq else K
+        V = mirror_quantizer(op._value_dense.oq, V) if op._value_dense.enable_oq else V
+
+        q_query = mirror_quantizer(op._query_dense.iq, query) if op._query_dense.iq is not None else query
+        Q = einsum(op._query_dense.equation, q_query[None], query_qk)[0] + query_qb
+        Q = mirror_quantizer(op._query_dense.oq, Q) if op._query_dense.enable_oq else Q
+
+    else:
+        q_query = mirror_quantizer(op._query_dense.iq, query) if op._query_dense.iq is not None else query
+        Q = einsum(op._query_dense.equation, q_query[None], query_qk)[0] + query_qb
+        Q = mirror_quantizer(op._query_dense.oq, Q) if op._query_dense.enable_oq else Q
+
+        q_key = mirror_quantizer(op._key_dense.iq, key) if op._key_dense.iq is not None else key
+        K = einsum(op._key_dense.equation, q_key[None], key_qk)[0] + key_qb
+        K = mirror_quantizer(op._key_dense.oq, K) if op._key_dense.enable_oq else K
+
+        q_value = mirror_quantizer(op._value_dense.iq, value) if op._value_dense.iq is not None else value
+        V = einsum(op._value_dense.equation, q_value[None], value_qk)[0] + value_qb
+        V = mirror_quantizer(op._value_dense.oq, V) if op._value_dense.enable_oq else V
+
+    return Q, K, V
+
+
 class ReplayMHA(ReplayOperationBase):
     handles = (QMultiHeadAttention,)
     __input_quantizer_handled__ = True
@@ -75,7 +136,7 @@ class ReplayMHA(ReplayOperationBase):
     def call(
         self,
         query: FixedVariableArray,
-        value: FixedVariableArray,
+        value=None,
         key=None,
         query_mask=None,
         value_mask=None,
@@ -86,8 +147,8 @@ class ReplayMHA(ReplayOperationBase):
     ):
         op: QMultiHeadAttention = self.op
 
-        if key is None:
-            key = value
+        value = query if value is None else value
+        key = value if key is None else key
 
         _attention_mask = _compute_attention_mask(
             query,
@@ -99,9 +160,8 @@ class ReplayMHA(ReplayOperationBase):
             use_causal_mask=use_causal_mask,
         )
 
-        query = ReplayQDense(op._query_dense)(query)[0][None]
-        key = ReplayQDense(op._key_dense)(key)[0][None]
-        value = ReplayQDense(op._value_dense)(value)[0][None]
+        query, key, value = _fused_qkv_proj(query, key, value, op)
+        query, key, value = query[None], key[None], value[None]
 
         attention_output, attention_scores = _compute_attention(op, query, key, value, _attention_mask)
         attention_output = ReplayQDense(op._output_dense)(attention_output[0])[0]
@@ -120,7 +180,7 @@ class ReplayQLinformerAttention(ReplayMHA):
     def call(
         self,
         query,
-        value,
+        value=None,
         key=None,
         query_mask=None,
         value_mask=None,
@@ -130,6 +190,7 @@ class ReplayQLinformerAttention(ReplayMHA):
         use_causal_mask=False,
     ):
         assert use_causal_mask is False, 'Causal mask is not supported in QLinformerAttention.'
+        value = value if value is not None else query
         key = key if key is not None else value
         op: QLinformerAttention = self.op
         key = ReplayQDense(op._lin_k_proj)(key)[0]

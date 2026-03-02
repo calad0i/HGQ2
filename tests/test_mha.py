@@ -20,9 +20,9 @@ class TestMultiHeadAttention(LayerTestBase):
     def key_dim(self, request):
         return request.param
 
-    @pytest.fixture(params=['none'])  # Test different fusion modes
+    @pytest.fixture(params=['qkv', 'kv', 'none'])  # Test different fusion modes
     def fuse(self, request):
-        # qkv and kv fused projection not implemented in hls4ml yet
+        # qkv and kv fused projection only makes difference in da4ml
         return request.param
 
     @pytest.fixture
@@ -31,7 +31,7 @@ class TestMultiHeadAttention(LayerTestBase):
         if fuse == 'none':
             return (2, 4, 8), (2, 4, 9), (2, 4, 10)
         elif fuse == 'qkv':
-            return (2, 4, 8)
+            return ((2, 4, 8),)
         elif fuse == 'kv':
             return (2, 4, 3), (2, 4, 5)
         raise ValueError(f'Invalid fusion mode: {fuse}')
@@ -102,3 +102,7 @@ class TestLinformerAttention(TestMultiHeadAttention):
     def layer_kwargs(self, num_heads, key_dim, fuse, input_shapes):
         lin_kv_proj_dim = [2 for _ in range(len(input_shapes[0]) - 1)]
         return {'num_heads': num_heads, 'key_dim': key_dim, 'fuse': fuse, 'lin_kv_proj_dim': lin_kv_proj_dim}
+
+    @pytest.fixture(params=['none'])  # Test different fusion modes
+    def fuse(self, request):
+        return request.param

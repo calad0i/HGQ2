@@ -105,7 +105,10 @@ class ReplayOperationBase(metaclass=HandlerRegMeta):
                     else:
                         outputs = relu(outputs)
                 else:
-                    raise NotImplementedError(f'Activation {activation} is not supported in mirror operation')
+                    raise NotImplementedError(
+                        f'Activation {activation} is not allowed in activation= field for common layers.'
+                        ' Use dedicated QUnaryFunctionLUT layer instead.'
+                    )
 
         if layer.enable_oq and not self.__output_quantizer_handled__:
             if isinstance(outputs, tuple):

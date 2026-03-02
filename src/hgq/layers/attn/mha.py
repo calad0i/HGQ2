@@ -90,10 +90,14 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         )
         return common_kwargs
 
+    def compute_output_spec(self, query, value=None, key=None, *args, **kwargs):
+        value = query if value is None else value
+        return super().compute_output_spec(*args, query=query, value=value, key=key, **kwargs)
+
     def build(
         self,
         query_shape,
-        value_shape,
+        value_shape=None,
         key_shape=None,
     ):
         """Builds layers and variables.
@@ -102,7 +106,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         ----------
         query_shape : tuple
             Shape of the `query` tensor.
-        value_shape : tuple
+        value_shape : tuple, optional
             Shape of the `value` tensor.
         key_shape : tuple, optional
             Shape of the `key` tensor.
@@ -111,14 +115,19 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         # Copied and modified from keras MultiHeadAttention, substituted
         # EinsumDense with QEinsumDense and added sequence length (shape) to its
         # output shape when initializing, if known.
+        value_shape = query_shape if value_shape is None else value_shape
         key_shape = value_shape if key_shape is None else key_shape
 
-        # if query_shape[-1] != value_shape[-1]:
-        #     raise ValueError(
-        #         "The last dimension of `query_shape` and `value_shape` "
-        #         f"must be equal, but are {query_shape[-1]}, {value_shape[-1]}. "
-        #         "Received: query_shape={query_shape}, value_shape={value_shape}"
-        #     )
+        if self._fuse == 'qkv':
+            assert query_shape == value_shape == key_shape, (
+                'For fuse=qkv, query, key and value must have the same shape',
+                f'but got query_shape={query_shape}, value_shape={value_shape} and key_shape={key_shape}.',
+            )
+        if self._fuse == 'kv':
+            assert value_shape == key_shape, (
+                'For fuse=kv, key and value must have the same shape',
+                f'but got value_shape={value_shape} and key_shape={key_shape}.',
+            )
 
         if value_shape[1:-1] != key_shape[1:-1]:
             raise ValueError(
@@ -371,10 +380,12 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         for sublayer in self._flatten_layers():
             assert sublayer.built, f'Sublayer {sublayer.name} is not built for {self.name}'
 
-    def _compute_ebops(self, query_shape, value_shape, key_shape=None):
+    def _compute_ebops(self, query_shape, value_shape=None, key_shape=None):
         Q_shape = (1,) + self._query_dense.full_output_shape[1:]
         K_shape = (1,) + self._key_dense.full_output_shape[1:]
         V_shape = (1,) + self._value_dense.full_output_shape[1:]
+
+        value_shape = query_shape if value_shape is None else value_shape
         attn_score_shape = (1, self._num_heads, *query_shape[1:-1], *value_shape[1:-1])
 
         # PF not supported for MHA for now.
@@ -420,7 +431,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
     def call(
         self,
         query,
-        value,
+        value=None,
         key=None,
         query_mask=None,
         value_mask=None,
@@ -432,6 +443,8 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
     ):
         # Adapted from _compute_attention in keras 3.5.0
 
+        if value is None:
+            value = query
         if key is None:
             key = value
 
