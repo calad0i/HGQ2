@@ -307,7 +307,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         # Copied and modified from keras MultiHeadAttention, substituted Softmax with QSoftmax.
         if self._attention_axes is None:
             self._attention_axes = tuple(range(1, rank - 2))
-        else:
+        elif not isinstance(self._attention_axes, tuple):
             self._attention_axes = tuple(self._attention_axes)
         (
             self._dot_product_equation,
@@ -413,9 +413,9 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         return ebops
 
     @property
-    def ebops(self) -> int:
+    def ebops(self):
         if self._ebops is None:
-            return 0
+            return ops.cast(0, 'uint32')
         ebops = sum(
             (  # type: ignore
                 self._query_dense.ebops,
@@ -423,10 +423,10 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 self._value_dense.ebops,
                 self._softmax.ebops,
                 self._output_dense.ebops,
-                ops.convert_to_tensor(self._ebops),
+                ops.convert_to_tensor(self._ebops),  # type: ignore
             )
         )
-        return round(ops.convert_to_numpy(ebops).item())  # type: ignore
+        return ebops  # type: ignore
 
     def call(
         self,

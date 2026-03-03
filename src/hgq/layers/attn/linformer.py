@@ -61,10 +61,16 @@ class QLinformerAttention(QMultiHeadAttention):
         assert key_rank == value_rank, (
             f'Key and value must have the same rank, but got key shape {key_shape} and value shape {value_shape}.'
         )
-        if self.attention_axes is not None:
-            attn_axes = tuple(self.attention_axes)
-        else:
-            attn_axes = tuple(range(1, value_rank - 1))
+        if self.share_kv_proj:
+            assert key_shape == value_shape, (
+                f'When share_kv_proj is True, k and v must have the same shape. Got key ({key_shape}) and value ({value_shape}).'
+            )
+
+        if self._attention_axes is None:
+            self._attention_axes = tuple(range(1, value_rank - 1))
+        elif not isinstance(self._attention_axes, tuple):
+            self._attention_axes = tuple(self._attention_axes)
+        attn_axes = self._attention_axes
 
         assert len(attn_axes) == len(self._kv_proj_dim), (
             f'Attention axes are {attn_axes}, but kv_proj_dim is {self._kv_proj_dim}. They must match in length.'
@@ -134,22 +140,17 @@ class QLinformerAttention(QMultiHeadAttention):
         )
 
     @property
-    def ebops(self) -> int:
+    def ebops(self):
         if self._ebops is None:
-            return 0
+            return ops.cast(0, 'uint32')
         ebops = sum(
             (  # type: ignore
-                self._query_dense.ebops,
-                self._key_dense.ebops,
-                self._value_dense.ebops,
-                self._softmax.ebops,
-                self._output_dense.ebops,
                 self._lin_k_proj.ebops,
                 self._lin_v_proj.ebops,
-                ops.convert_to_tensor(self._ebops),
+                ops.convert_to_tensor(self._ebops),  # type: ignore
             )
         )
-        return round(ops.convert_to_numpy(ebops).item())  # type: ignore
+        return ebops  # type: ignore
 
     def _compute_ebops(self, query_shape, value_shape=None, key_shape=None):
         return super()._compute_ebops(query_shape, self._value_shape_proj, key_shape=self._key_shape_proj)
