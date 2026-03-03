@@ -43,12 +43,14 @@ class QLinformerAttention(QMultiHeadAttention):
         stable_softmax=True,
         softmax_allow_heterogeneous_table: bool = False,
         parallelization_factor=-1,
+        share_kv_proj=False,
         **kwargs,
     ):
         if fuse != 'none':
             raise ValueError(f'Only fuse="none" can be used for QLinformerAttention, but got fuse="{fuse}".')
-        kwargs = gather_vars_to_kwargs('self|lin_kv_proj_dim')
+        kwargs = gather_vars_to_kwargs('self|lin_kv_proj_dim|share_kv_proj')
         self._kv_proj_dim = (lin_kv_proj_dim,) if isinstance(lin_kv_proj_dim, int) else tuple(lin_kv_proj_dim)
+        self.share_kv_proj = share_kv_proj
         super().__init__(**kwargs)
 
     def build(self, query_shape, value_shape=None, key_shape=None):
@@ -89,13 +91,15 @@ class QLinformerAttention(QMultiHeadAttention):
         self._lin_k_proj = QEinsumDense(
             eq_lin_kv_proj, self._key_shape_proj[1:], bias_axes=None, **self._get_common_kwargs_for_sublayer()
         )
-
-        self._lin_v_proj = QEinsumDense(
-            eq_lin_kv_proj, self._value_shape_proj[1:], bias_axes=None, **self._get_common_kwargs_for_sublayer()
-        )
-
         self._lin_k_proj.build(key_shape)
-        self._lin_v_proj.build(value_shape)
+
+        if not self.share_kv_proj:
+            self._lin_v_proj = QEinsumDense(
+                eq_lin_kv_proj, self._value_shape_proj[1:], bias_axes=None, **self._get_common_kwargs_for_sublayer()
+            )
+            self._lin_v_proj.build(value_shape)
+        else:
+            self._lin_v_proj = self._lin_k_proj
 
         super().build(query_shape, self._value_shape_proj, key_shape=self._key_shape_proj)
 
@@ -153,4 +157,5 @@ class QLinformerAttention(QMultiHeadAttention):
     def get_config(self):
         config = super().get_config()
         config['lin_kv_proj_dim'] = self._kv_proj_dim
+        config['share_kv_proj'] = self.share_kv_proj
         return config
