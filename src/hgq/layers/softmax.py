@@ -32,8 +32,6 @@ class QSoftmax(QLayerBaseSingleInput):
         assert axis is None or axes is None, 'Use only one of `axis` or `axes`.'
         self.axes = axes or (tuple(axis) if isinstance(axis, Sequence) else (axis,) if axis is not None else (-1,))
 
-        self.supports_masking = True
-
         if enable_ebops is None:
             enable_ebops = global_config['enable_ebops']
 
@@ -99,6 +97,7 @@ class QSoftmax(QLayerBaseSingleInput):
             enable_ebops=self.enable_ebops and stable,
             beta0=self._beta0.clone(),
         )
+        self.supports_masking = True
 
     def build(self, input_shape):
         self.exp_table.build(input_shape)

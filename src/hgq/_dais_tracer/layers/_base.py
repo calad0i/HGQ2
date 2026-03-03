@@ -75,7 +75,6 @@ class ReplayOperationBase(metaclass=HandlerRegMeta):
 
         layer: hgq.layers.QLayerBase = self.op
         assert kwargs.pop('training', False) is False, 'Training mode is not supported in mirror operation'
-        assert kwargs.pop('mask', None) is None, 'Masking is not supported in mirror operation'
 
         if not self.__input_quantizer_handled__:
             assert len(args) == 1

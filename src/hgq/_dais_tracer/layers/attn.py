@@ -101,14 +101,12 @@ class ReplayMHA(ReplayOperationBase):
             q = query.shape[0]
             v = q if value is None else value.shape[0]
             masks.append(np.tril(np.ones((q, v), dtype='uint8')))  # [Q, V]
-        masks.append(attention_mask)
+        if attention_mask is not None:
+            masks.append(attention_mask)
         if not masks:
             return None
 
-        if any(isinstance(m, FixedVariableArray) for m in masks):
-            return np.prod(np.stack(masks, axis=0), axis=0)
-        else:
-            return None
+        return np.prod(np.stack(masks, axis=0), axis=0)
 
     def _masked_softmax(self, op, attention_scores, attention_mask=None):
         # Normalize the attention scores to probabilities.
