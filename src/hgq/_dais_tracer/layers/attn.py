@@ -2,69 +2,16 @@ import numpy as np
 from da4ml.trace import FixedVariableArray
 from da4ml.trace.ops import einsum
 
-from hgq.layers import (
+from hgq.layers.attn import (
     QLinformerAttention,
     QMultiHeadAttention,
+    QSALTAttention,
 )
 
 from ._base import ReplayOperationBase, mirror_quantizer, to_np_arr
 from .activation import ReplayQSoftmax
+from .conv import ReplayQConv
 from .dense import ReplayQDense
-
-
-def _compute_attention_mask(
-    query,
-    value,
-    query_mask=None,
-    value_mask=None,
-    key_mask=None,
-    attention_mask=None,
-    use_causal_mask=False,
-):
-    masks = []
-    if query_mask is not None:
-        masks.append(np.expand_dims(query_mask, -1))  # [Q, 1]
-    if value_mask is not None:
-        masks.append(np.expand_dims(value_mask, -2))  # [1, V]
-    if key_mask is not None:
-        masks.append(np.expand_dims(key_mask, -2))  # [1, V]
-    if use_causal_mask:
-        q = query.shape[0]
-        v = q if value is None else value.shape[0]
-        masks.append(np.tril(np.ones((q, v), dtype='uint8')))  # [Q, V]
-    masks.append(attention_mask)
-    if not masks:
-        return None
-
-    if any(isinstance(m, FixedVariableArray) for m in masks):
-        return np.prod(np.stack(masks, axis=0), axis=0)
-    else:
-        return None
-
-
-def _masked_softmax(op, attention_scores, attention_mask=None):
-    # Normalize the attention scores to probabilities.
-    # attention_scores = [B, N, T, S]
-    if attention_mask is not None:
-        # The expand dim happens starting from the `num_heads` dimension,
-        # (<batch_dims>, num_heads, <query_attention_dims,
-        # key_attention_dims>)
-        mask_expansion_axis = -len(op._attention_axes) * 2 - 1
-        for _ in range(len(attention_scores.shape) - len(attention_mask.shape)):
-            attention_mask = np.expand_dims(attention_mask, axis=mask_expansion_axis)
-    return ReplayQSoftmax(op._softmax)(attention_scores[0], mask=attention_mask)[0][None]
-
-
-def _compute_attention(op: QMultiHeadAttention, query, key, value, attention_mask=None, training=None):
-    # Take the dot product between "query" and "key" to get the raw
-    # attention scores.
-    attention_scores = einsum(op._dot_product_equation, key, query)
-
-    attention_scores = _masked_softmax(op, attention_scores, attention_mask)
-
-    # `context_layer` = [B, T, N, H]
-    attention_output = einsum(op._combine_equation, attention_scores, value)
-    return attention_output, attention_scores
 
 
 def _fused_qkv_proj(query: FixedVariableArray, key: FixedVariableArray, value: FixedVariableArray, op: QMultiHeadAttention):
@@ -133,6 +80,59 @@ class ReplayMHA(ReplayOperationBase):
     __input_quantizer_handled__ = True
     __output_quantizer_handled__ = True
 
+    def _compute_attention_mask(
+        self,
+        query,
+        value,
+        query_mask=None,
+        value_mask=None,
+        key_mask=None,
+        attention_mask=None,
+        use_causal_mask=False,
+    ):
+        masks = []
+        if query_mask is not None:
+            masks.append(np.expand_dims(query_mask, -1))  # [Q, 1]
+        if value_mask is not None:
+            masks.append(np.expand_dims(value_mask, -2))  # [1, V]
+        if key_mask is not None:
+            masks.append(np.expand_dims(key_mask, -2))  # [1, V]
+        if use_causal_mask:
+            q = query.shape[0]
+            v = q if value is None else value.shape[0]
+            masks.append(np.tril(np.ones((q, v), dtype='uint8')))  # [Q, V]
+        masks.append(attention_mask)
+        if not masks:
+            return None
+
+        if any(isinstance(m, FixedVariableArray) for m in masks):
+            return np.prod(np.stack(masks, axis=0), axis=0)
+        else:
+            return None
+
+    def _masked_softmax(self, op, attention_scores, attention_mask=None):
+        # Normalize the attention scores to probabilities.
+        # attention_scores = [B, N, T, S]
+        if attention_mask is not None:
+            # The expand dim happens starting from the `num_heads` dimension,
+            # (<batch_dims>, num_heads, <query_attention_dims,
+            # key_attention_dims>)
+            mask_expansion_axis = -len(op._attention_axes) * 2 - 1
+            for _ in range(len(attention_scores.shape) - len(attention_mask.shape)):
+                attention_mask = np.expand_dims(attention_mask, axis=mask_expansion_axis)
+        return ReplayQSoftmax(op._softmax)(attention_scores[0], mask=attention_mask)[0][None]
+
+    def _compute_attention(self, op: QMultiHeadAttention, query, key, value, attention_mask=None, training=None):
+        # Take the dot product between "query" and "key" to get the raw
+        # attention scores.
+        attention_scores = einsum(op._dot_product_equation, key, query)
+
+        attention_scores = self._masked_softmax(op, attention_scores, attention_mask)
+
+        # `context_layer` = [B, T, N, H]
+        attention_output = einsum(op._combine_equation, attention_scores, value)
+        return attention_output, attention_scores
+
     def call(
         self,
         query: FixedVariableArray,
@@ -150,7 +150,7 @@ class ReplayMHA(ReplayOperationBase):
         value = query if value is None else value
         key = value if key is None else key
 
-        _attention_mask = _compute_attention_mask(
+        _attention_mask = self._compute_attention_mask(
             query,
             value,
             query_mask=query_mask,
@@ -163,7 +163,7 @@ class ReplayMHA(ReplayOperationBase):
         query, key, value = _fused_qkv_proj(query, key, value, op)
         query, key, value = query[None], key[None], value[None]
 
-        attention_output, attention_scores = _compute_attention(op, query, key, value, _attention_mask)
+        attention_output, attention_scores = self._compute_attention(op, query, key, value, _attention_mask)
         attention_output = ReplayQDense(op._output_dense)(attention_output[0])[0]
 
         if op.enable_oq:
@@ -207,4 +207,51 @@ class ReplayQLinformerAttention(ReplayMHA):
         )
 
 
-__all__ = ['ReplayMHA', 'ReplayQLinformerAttention']
+class ReplaySALTAttention(ReplayMHA):
+    handles = (QSALTAttention,)
+
+    def _masked_softmax(self, op, attention_scores, attention_mask=None):
+        self.op: QSALTAttention
+        if self.op.conv_size > 0:
+            attention_scores = ReplayQConv(self.op.conv)(attention_scores[0])[0][None]
+        return super()._masked_softmax(op, attention_scores, attention_mask)
+
+    def call(
+        self,
+        query,
+        value=None,
+        key=None,
+        query_mask=None,
+        value_mask=None,
+        key_mask=None,
+        attention_mask=None,
+        return_attention_scores=False,
+        use_causal_mask=False,
+    ):
+        assert use_causal_mask is False, 'Causal mask is not supported in QLinformerAttention.'
+        value = value if value is not None else query
+        key = key if key is not None else value
+        op = self.op
+
+        if self.op.cluster_k_proj:
+            key = np.pad(key, [[0, self.op.n_k_pad], [0, 0]], mode='constant', constant_values=0)  # type: ignore
+            key = np.reshape(key, self.op._k_reshape_to[1:])  # type: ignore
+
+        if self.op.n_v_pad > 0:
+            value = np.pad(value, [[0, self.op.n_v_pad], [0, 0]], mode='constant', constant_values=0)  # type: ignore
+            value = np.reshape(value, self.op._v_reshape_to[1:])  # type: ignore
+        key = ReplayQDense(op._lin_k_proj)(key)[0]
+        value = ReplayQDense(op._lin_v_proj)(value)[0]
+        return super().call(
+            query,
+            value,
+            key,
+            query_mask=query_mask,
+            value_mask=value_mask,
+            key_mask=key_mask,
+            attention_mask=attention_mask,
+            return_attention_scores=return_attention_scores,
+        )
+
+
+__all__ = ['ReplayMHA', 'ReplayQLinformerAttention', 'ReplaySALTAttention']

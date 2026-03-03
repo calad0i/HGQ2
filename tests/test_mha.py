@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from keras import ops
 
-from hgq.layers import QLinformerAttention, QMultiHeadAttention
+from hgq.layers.attn import QLinformerAttention, QMultiHeadAttention, QSALTAttention
 from hgq.quantizer.internal import FixedPointQuantizerKBI, FixedPointQuantizerKIF
 
 from .base import LayerTestBase
@@ -106,3 +106,34 @@ class TestLinformerAttention(TestMultiHeadAttention):
     @pytest.fixture(params=['none'])  # Test different fusion modes
     def fuse(self, request):
         return request.param
+
+
+class TestSALTAttention(TestMultiHeadAttention):
+    layer_cls = QSALTAttention
+    hls4ml_not_supported = True
+
+    @pytest.fixture(params=['none'])  # Test different fusion modes
+    def fuse(self, request):
+        return request.param
+
+    @pytest.fixture(params=[(True, True, True), (False, False, False), (True, False, False)])
+    def cluster_and_share(self, request):
+        return request.param
+
+    @pytest.fixture
+    def input_shapes(self):
+        return ((9, 12),)
+
+    @pytest.fixture
+    def layer_kwargs(self, num_heads, key_dim, fuse, cluster_and_share):
+        cluster_k_proj, cluster_v_proj, share_kv_proj = cluster_and_share
+        lin_kv_proj_dim = 4
+        return {
+            'num_heads': num_heads,
+            'key_dim': key_dim,
+            'fuse': fuse,
+            'cluster_k_proj': cluster_k_proj,
+            'cluster_v_proj': cluster_v_proj,
+            'share_kv_proj': share_kv_proj,
+            'lin_kv_proj_dim': lin_kv_proj_dim,
+        }
