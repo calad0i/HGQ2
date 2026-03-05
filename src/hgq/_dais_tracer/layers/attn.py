@@ -118,6 +118,8 @@ class ReplayMHA(ReplayOperationBase):
             mask_expansion_axis = -len(op._attention_axes) * 2 - 1
             for _ in range(len(attention_scores.shape) - len(attention_mask.shape)):
                 attention_mask = np.expand_dims(attention_mask, axis=mask_expansion_axis)
+            attention_mask = attention_mask[0]
+
         return ReplayQSoftmax(op._softmax)(attention_scores[0], mask=attention_mask)[0][None]
 
     def _compute_attention(self, op: QMultiHeadAttention, query, key, value, attention_mask=None, training=None):

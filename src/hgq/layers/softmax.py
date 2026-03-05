@@ -116,12 +116,15 @@ class QSoftmax(QLayerBaseSingleInput):
             inputs = self.iq(inputs, training=training)
 
         if self.stable:
+            if mask is not None:
+                mask = ops.cast(mask, ops.dtype(inputs))
+                inputs = mask * inputs - (1 - mask) * 1e9
             inputs = ops.max(inputs, axis=self.axes, keepdims=True) - inputs
 
         exp_inp = self.exp_table(inputs, training=training)
 
         if mask is not None:
-            exp_inp = backend.cast(mask, ops.dtype(inputs)) * exp_inp
+            exp_inp = ops.cast(mask, ops.dtype(inputs)) * exp_inp
 
         sums = ops.sum(exp_inp, axis=self.axes, keepdims=True)  # type: ignore
         divisor = self.inv_table(sums, training=training)

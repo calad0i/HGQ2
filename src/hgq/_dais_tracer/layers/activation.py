@@ -69,12 +69,15 @@ class ReplayQSoftmax(ReplayOperationBase):
         inputs = inputs[None]
 
         if op.stable:
+            if mask is not None:
+                low = np.min(inputs.lhs[0]) - 1
+                inputs = np.where(mask, inputs, low)  # type: ignore
             inputs = np.amax(inputs, axis=op.axes, keepdims=True) - inputs  # type: ignore
 
         exp_inp = ReplayQFunctionLUT(op.exp_table)(inputs[0])[0]
 
         if mask is not None:
-            exp_inp = mask[0] * exp_inp
+            exp_inp = mask * exp_inp
 
         sums = np.sum(exp_inp[None], axis=op.axes, keepdims=True)[0]  # type: ignore
         divisor = ReplayQFunctionLUT(op.inv_table)(sums)[0]
