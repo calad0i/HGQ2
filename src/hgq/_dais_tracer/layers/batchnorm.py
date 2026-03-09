@@ -9,7 +9,7 @@ from ._base import ReplayOperationBase
 class ReplayQBatchNormalization(ReplayOperationBase):
     handles = (QBatchNormalization,)
 
-    def call(self, inputs: FixedVariableArray) -> FixedVariableArray:
+    def call(self, inputs: FixedVariableArray, mask=None) -> FixedVariableArray:
         layer: QBatchNormalization = self.op
         scale, bias = map(np.array, layer.qscaler_and_qoffset)
         shape = layer._shape[1:]
