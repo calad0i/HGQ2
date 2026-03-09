@@ -71,6 +71,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         self.parallelization_factor = kwargs.pop('parallelization_factor')
         self._stable_softmax = kwargs.pop('stable_softmax')
         self._fuse = kwargs.pop('fuse', 'none').lower()
+        self._inverse_sqrt_key_dim = 1.0 / math.sqrt(float(key_dim))
 
         super().__init__(**kwargs)
 
@@ -198,15 +199,15 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         )
         self._value_dense.build(value_shape)
 
-        if self._fuse == 'qkv':
+        if self._fuse == 'qkv' and self.enable_iq:
             self._query_dense._iq = self._value_dense._iq
-        if self._fuse in ('qkv', 'kv'):
+            self._query_dense._enable_iq = True
+        if self._fuse in ('qkv', 'kv') and self.enable_iq:
             self._key_dense._iq = self._value_dense._iq
+            self._key_dense._enable_iq = True
 
         self._query_dense.build(query_shape)
-        self._query_dense._enable_iq = True
         self._key_dense.build(key_shape)
-        self._key_dense._enable_iq = True
 
         # Builds the attention computations for multi-head dot product
         # attention.  These computations could be wrapped into the keras
@@ -320,7 +321,6 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 attn_scores_rank,
             ),
         )
-        _inverse_sqrt_key_dim = 1.0 / math.sqrt(float(self._key_dim))
         self._softmax = QSoftmax(
             enable_oq=True,
             axis=norm_axes,
@@ -333,7 +333,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             inv_oq_conf=self._softmax_inv_oq_conf,
             oq_conf=self._softmax_oq_conf,
             allow_heterogeneous_table=self._softmax_allow_heterogeneous_table,
-            input_scaler=_inverse_sqrt_key_dim,
+            input_scaler=self._inverse_sqrt_key_dim,
             enable_ebops=self.enable_ebops,
         )
         self._dropout_layer = Dropout(
