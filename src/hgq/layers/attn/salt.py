@@ -126,7 +126,6 @@ class QSALTAttention(QMultiHeadAttention):
             self._lin_v_proj = self._lin_k_proj
 
         attn_score_shape = (query_shape[0], self.num_heads, query_shape[1], self._kv_proj_dim)
-        print(attn_score_shape)
         if self.conv_size > 0:
             self.conv = QConv2D(
                 filters=attn_score_shape[1],
