@@ -118,9 +118,6 @@ class ReplayQConv(ReplayOperationBase):
         dilation_rate = layer.dilation_rate
         groups = layer.groups
 
-        if layer.data_format == 'channels_first':
-            inputs = np.moveaxis(inputs, 0, -1)  # type: ignore
-
         x = symbolic_extract_patches(
             inputs,
             size=layer.kernel_size,
@@ -129,6 +126,9 @@ class ReplayQConv(ReplayOperationBase):
             padding=padding,
             data_format=layer.data_format,
         )
+
+        if layer.data_format == 'channels_first':
+            inputs = np.moveaxis(inputs, 0, -1)  # type: ignore
 
         ch_out = qkernel.shape[-1]
 
