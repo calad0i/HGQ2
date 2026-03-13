@@ -33,10 +33,10 @@ In addition, this framework improves upon the old HGQ implementation in the foll
 pip install HGQ2
 ```
 
-If you are using `da4ml`, please make sure it is at least version 0.3:
+If you are using `da4ml`, please make sure it is at least version 0.6:
 
 ```bash
-pip install da4ml>=0.3
+pip install da4ml>=0.6
 ```
 
 If you are using `hls4ml`, please make sure it is at least version 1.2:

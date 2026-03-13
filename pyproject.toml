@@ -26,7 +26,7 @@ dynamic = [ "version" ]
 dependencies = [ "keras>=3.11", "quantizers>=1.2.2", "tqdm" ]
 optional-dependencies.docs = [ "myst-parser", "pyparsing", "sphinx", "sphinx-rtd-theme" ]
 optional-dependencies.test = [
-  "da4ml>=0.3",
+  "da4ml>=0.6",
   "hls4ml>=1.2",
   "jax>=0.4.20",
   "jaxlib>=0.4.20",
