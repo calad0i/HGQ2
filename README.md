@@ -73,3 +73,26 @@ A minimal example is shown below:
          QDense(10)
       ])
 ```
+
+## Citation
+
+If you use HGQ2 in your research, please consider citing the following paper:
+
+```bibtex
+@inproceedings{hgq,
+author = {Sun, Chang and Que, Zhiqiang and Aarrestad, Thea and Loncar, Vladimir and Ngadiuba, Jennifer and Luk, Wayne and Spiropulu, Maria},
+title = {HGQ: High Granularity Quantization for Real-time Neural Networks on FPGAs},
+year = {2026},
+isbn = {9798400720796},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+url = {https://doi.org/10.1145/3748173.3779200},
+doi = {10.1145/3748173.3779200},
+booktitle = {Proceedings of the 2026 ACM/SIGDA International Symposium on Field Programmable Gate Arrays},
+pages = {79–91},
+numpages = {13},
+keywords = {quantization-aware training, fpga, real-time inference, neural networks, hardware-software codesign, low-latency, quantization},
+location = {USA},
+series = {FPGA '26}
+}
+```
