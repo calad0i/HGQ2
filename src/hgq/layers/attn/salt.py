@@ -50,7 +50,7 @@ class QSALTAttention(QMultiHeadAttention):
         share_kv_proj=False,
         cluster_k_proj=False,
         cluster_v_proj=False,
-        conv_size=-1,
+        conv_size=3,
         separate_conv=False,
         **kwargs,
     ):
@@ -125,7 +125,8 @@ class QSALTAttention(QMultiHeadAttention):
         else:
             self._lin_v_proj = self._lin_k_proj
 
-        attn_score_shape = (query_shape[0], self.num_heads, query_shape[1], key_shape[1])
+        attn_score_shape = (query_shape[0], self.num_heads, query_shape[1], self._kv_proj_dim)
+        print(attn_score_shape)
         if self.conv_size > 0:
             self.conv = QConv2D(
                 filters=attn_score_shape[1],
@@ -135,6 +136,7 @@ class QSALTAttention(QMultiHeadAttention):
                 **self._get_common_kwargs_for_sublayer(),
                 data_format='channels_first',
             )
+            self.conv.build(attn_score_shape)
 
         super().build(query_shape, self._value_shape_proj, key_shape=self._key_shape_proj)
 
