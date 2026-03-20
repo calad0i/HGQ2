@@ -34,10 +34,10 @@ def symbolic_extract_patches_3d(
     out_index: np.ndarray = ops.convert_to_numpy(out_tensor).round().astype(np.int32)  # type: ignore
     mask = out_index == 0
     out_index = np.where(mask, 0, -out_index - 1)
-    images = images.ravel()[out_index]
+    images = images.ravel()[out_index]  # type: ignore
 
     if isinstance(images, FixedVariableArray):
-        _vars = images._vars
+        _vars = np.asarray(images)
         _vars = np.where(mask, pad_value, _vars)
         images = FixedVariableArray(_vars, images.solver_options)  # type: ignore
     else:

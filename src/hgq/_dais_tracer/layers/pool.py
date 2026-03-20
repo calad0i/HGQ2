@@ -94,7 +94,7 @@ class ReplayPool(ReplayOperationBase):
                 raise ValueError(f'Unknown padding type: {padding}')
 
             if op == 'max':
-                _vars = np.where(mask, x._vars, -(65535**2))
+                _vars = np.where(mask, x, -2147483648)
                 x = FixedVariableArray(_vars, x.solver_options)
                 out = np.max(x, axis=-2)  # type: ignore
             elif op == 'avg':

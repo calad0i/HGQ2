@@ -31,14 +31,14 @@ class ReplayReLU(ReplayOperationBase):
             return relu(inputs)
 
         pos_part = inputs if maxv is None else np.minimum(inputs, maxv)  # type: ignore
-        pos_part = pos_part._vars.ravel()
+        pos_part = pos_part.ravel()
 
         if th != 0:
-            z_cond = (inputs - (th + 2.0 ** (-inputs.kif[2] - 1)))._vars.ravel()
+            z_cond = (inputs - (th + 2.0 ** (-inputs.kif[2] - 1))).ravel()
         else:
-            z_cond = inputs._vars.ravel()
+            z_cond = inputs.ravel()
 
-        neg_part = ((inputs[None] - th) * neg)._vars.ravel()
+        neg_part = ((inputs[None] - th) * neg).ravel()
         out = np.array([c.msb_mux(n, p) if c.low < 0 else p for c, n, p in zip(z_cond, neg_part, pos_part)])
 
         return FixedVariableArray(out.reshape(inputs.shape), inputs.solver_options)

@@ -75,7 +75,7 @@ class ReplayMerge(ReplayOperationBase):
                 return np.sum(_inputs, axis=0) * op._scale  # type: ignore
             case 'Subtract':
                 assert len(_inputs) == 2, 'Subtract operation requires exactly two inputs'
-                return _inputs[0] - _inputs[1]
+                return _inputs[0] - _inputs[1]  # type: ignore
             case 'Multiply':
                 return np.prod(_inputs, axis=0)  # type: ignore
             case 'Maximum':
@@ -96,17 +96,16 @@ class ReplayRepeatVector(ReplayOperationBase):
         layer: keras.layers.RepeatVector = self.op
         if layer.n == 1:
             return inputs
-        # return FixedVariableArray(np.repeat(inputs._vars, layer.n, axis=0), inputs.solver_options)
         return np.repeat(inputs[None], layer.n, axis=0)[0]  # type: ignore
 
 
 class ReplayGetItem(ReplayOperationBase):
     handles = (GetItem,)
 
-    def call(self, x: FixedVariableArray, key):
+    def call(self, x: FixedVariableArray, key) -> FixedVariableArray:
         if isinstance(key, list):
             key = tuple(key)
-        return x[None][key][0]
+        return x[None][key][0]  # type: ignore
 
 
 class ReplayReduction(ReplayOperationBase):
@@ -134,7 +133,7 @@ class ReplayQReduction(ReplayOperationBase):
 class ReplayArithmetic(ReplayOperationBase):
     handles = (Add, Subtract, Multiply, TrueDivide, Divide, Maximum, Minimum)
 
-    def call(self, x1: FixedVariableArray, x2: FixedVariableArray):
+    def call(self, x1: FixedVariableArray, x2: FixedVariableArray) -> FixedVariableArray:
         name = self.op.__class__.__name__
         match name:
             case 'Add':
@@ -158,8 +157,6 @@ class ReplayConcatenate(ReplayOperationBase):
 
     def call(self, xs: Sequence[FixedVariableArray]):
         axis = self.op.axis
-        # return backend.numpy.concatenate(xs, axis=self.axis)
-        # return FixedVariableArray(np.concatenate([x._vars[None] for x in xs], axis=axis)[0], xs[0].solver_options)
         return np.concatenate([x[None] for x in xs], axis=axis)[0]  # type: ignore
 
 
@@ -168,14 +165,13 @@ class ReplayRepeat(ReplayOperationBase):
 
     def call(self, x: FixedVariableArray):
         repeats, axis = self.op.repeats, self.op.axis
-        # return FixedVariableArray(np.repeat(x._vars[None], repeats, axis=axis)[0], x.solver_options)
         return np.repeat(x[None], repeats, axis=axis)[0]  # type: ignore
 
 
 class ReplayTranspose(ReplayOperationBase):
     handles = (Transpose,)
 
-    def call(self, x: FixedVariableArray):
+    def call(self, x: FixedVariableArray) -> FixedVariableArray:
         axes = self.op.axes
         return np.transpose(x, axes)  # type: ignore
 
@@ -230,7 +226,7 @@ class ReplayEinsum(ReplayOperationBase):
             sub_out.remove(sub0[idx0])
             sub_out = ''.join(sub_out)
             eq = f'{sub0},{sub1}->{sub_out}'
-        return einsum(eq, inputs[0][None], inputs[1][None])[0]
+        return einsum(eq, inputs[0][None], inputs[1][None])[0]  # type: ignore
 
 
 class ReplayMatmul(ReplayOperationBase):

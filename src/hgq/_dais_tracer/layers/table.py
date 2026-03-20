@@ -149,9 +149,8 @@ class ReplayDenseTable(ReplayOperationBase):
             arr[:] = _quantize(arr, _k, _i, _f, overflow_mode, round_mode)
 
         ret_vars: list[FixedVariable] = [None] * len(tables)  # type: ignore
-        _vars = out.ravel()._vars
         for i in range(len(tables)):
-            ret_vars[i] = _vars[i].lookup(tables[i])
+            ret_vars[i] = out.flat[i].lookup(tables[i])
         out = FixedVariableArray(np.array(ret_vars).reshape(out_shape), solver_options=out.solver_options)
         out = np.sum(out, axis=-2)  # type: ignore
         return out
@@ -164,12 +163,12 @@ class ReplayConvTable(ReplayDenseTable):
         op: QConvTBase = self.op
 
         if op.rank == 1:
-            inputs = inputs[:, None]
+            inputs = inputs[:, None]  # type: ignore
 
         inputs = symbolic_extract_patches(inputs, **op.im2col_params)
 
         if op.rank == 1:
-            inputs = inputs[:, 0]
+            inputs = inputs[:, 0]  # type: ignore
 
         return super().call(inputs)
 
