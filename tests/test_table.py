@@ -9,6 +9,8 @@ from .base import CtxGlue, LayerTestBase
 
 
 class TableTestBase(LayerTestBase):
+    hls4ml_not_supported = True
+
     @pytest.fixture(params=[True])
     def use_parallel_io(self, request) -> bool:
         return request.param
