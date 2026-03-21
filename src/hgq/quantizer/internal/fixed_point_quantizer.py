@@ -1,4 +1,5 @@
 import keras
+import numpy as np
 from keras import ops
 from keras.constraints import Constraint
 from keras.initializers import Constant, Initializer
@@ -125,8 +126,9 @@ class FixedPointQuantizerBase(TrainableQuantizerBase):
         if not self.built:
             return f'{self.__class__.__name__}({self.round_mode}, {self.overflow_mode}, name={self.name}, built=False)'
         k, i, f = self.k, self.i, self.f
-        kstd, istd, fstd = float(ops.std(k)), float(ops.std(i)), float(ops.std(f))  # type: ignore
-        kmean, imean, fmean = float(ops.mean(k)), float(ops.mean(i)), float(ops.mean(f))  # type: ignore
+        k, i, f = ops.convert_to_numpy(k), ops.convert_to_numpy(i), ops.convert_to_numpy(f)
+        kstd, istd, fstd = float(np.std(k)), float(np.std(i)), float(np.std(f))  # type: ignore
+        kmean, imean, fmean = float(np.mean(k)), float(np.mean(i)), float(np.mean(f))  # type: ignore
         kstr = f'{kmean:.2f}±{kstd:.2f}'
         istr = f'{imean:.2f}±{istd:.2f}'
         fstr = f'{fmean:.2f}±{fstd:.2f}'
