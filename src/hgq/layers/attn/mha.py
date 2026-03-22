@@ -62,7 +62,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         self._qkvo_bq_conf = qkvo_bq_conf or QuantizerConfig(place='bias')
         self._qkvo_oq_conf = qkvo_oq_conf or QuantizerConfig(place='datalane')
         self._softmax_iq_conf = softmax_iq_conf or QuantizerConfig(place='datalane')
-        self._softmax_exp_iq_conf = softmax_exp_iq_conf or QuantizerConfig(place='datalane')
+        self._softmax_exp_iq_conf = softmax_exp_iq_conf or QuantizerConfig(place='datalane', overflow_mode='SAT')
         self._softmax_exp_oq_conf = softmax_exp_oq_conf or QuantizerConfig(place='table')
         self._softmax_inv_iq_conf = softmax_inv_iq_conf or QuantizerConfig(place='datalane')
         self._softmax_inv_oq_conf = softmax_inv_oq_conf or QuantizerConfig(place='table')
