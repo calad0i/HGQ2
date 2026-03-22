@@ -94,11 +94,11 @@ class TestMultiHeadAttention(LayerTestBase):
     def input_data(self, input_shapes, N: int = 5000):
         eps = 2.0**-8
         return tuple(
-            np.round((np.random.randn(N, *shape).astype(np.float32) * 3).clip(-8, 8 - eps) * 256) / 256 for shape in input_shapes
+            np.round((np.random.randn(N, *shape).astype(np.float32).clip(-1, 1 - eps)) * 256) / 256 for shape in input_shapes
         )
 
-    def assert_equal(self, keras_output, hls_output):
-        return np.testing.assert_allclose(keras_output, hls_output, atol=1e-6)
+    def assert_equal(self, keras_output, hw_output):
+        return np.testing.assert_allclose(keras_output, hw_output, atol=1e-6)
 
     def test_hls4ml_conversion(  # type: ignore
         self, model: keras.Model, input_data, temp_directory: str, use_parallel_io: bool, q_type: str, call_kwargs

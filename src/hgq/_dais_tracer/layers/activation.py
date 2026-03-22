@@ -66,7 +66,7 @@ class ReplayQSoftmax(ReplayOperationBase):
 
     def call(self, inputs: FixedVariableArray, mask: None | FixedVariableArray = None) -> FixedVariableArray:
         op: QSoftmax = self.op
-        inputs = inputs[None]
+        inputs = inputs[None]  # type: ignore
 
         if op.stable:
             if mask is not None:

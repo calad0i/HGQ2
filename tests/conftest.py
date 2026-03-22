@@ -1,5 +1,6 @@
 import os
 import random
+import time
 from pathlib import Path
 
 import keras
@@ -46,9 +47,29 @@ def configure_backend():
 
             torch.set_float32_matmul_precision('highest')
         case 'jax':
-            pass
+            import jax
+
+            jax.config.update('jax_disable_jit', True)
         case _:
             raise ValueError(f'Unknown backend: {backend}')
+
+
+_last_jax_cache_clear = 0.0
+
+
+@pytest.fixture(autouse=True)
+def _jax_cache_cleanup():
+    """After each test, clear JAX compilation cache if 30s+ since last clear."""
+    yield
+    if keras.backend.backend() != 'jax':
+        return
+    global _last_jax_cache_clear
+    now = time.monotonic()
+    if now - _last_jax_cache_clear >= 30:
+        import jax
+
+        jax.clear_caches()
+        _last_jax_cache_clear = now
 
 
 @pytest.fixture(scope='session', autouse=True)

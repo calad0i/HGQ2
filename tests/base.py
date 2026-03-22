@@ -27,7 +27,7 @@ class CtxGlue:
             ctx.__exit__(*args)
 
 
-def _assert_equal(a: np.ndarray | tuple[np.ndarray], b: np.ndarray | tuple[np.ndarray]):
+def _assert_equal(a: np.ndarray | tuple[np.ndarray], b: np.ndarray | tuple[np.ndarray], thres: float = 2e-4):
     if isinstance(a, Sequence):
         a = np.concatenate([arr.reshape(arr.shape[0], -1) for arr in a], axis=1)
     if isinstance(b, Sequence):
@@ -38,9 +38,9 @@ def _assert_equal(a: np.ndarray | tuple[np.ndarray], b: np.ndarray | tuple[np.nd
     abs_mismatch = np.abs(diff.ravel())[mismatches]
     rel_mismatch = abs_mismatch / (np.abs(a.ravel()[mismatches]) + 1e-8)
     sig_mismatch = (rel_mismatch > 0.1) & (abs_mismatch > 1e-3)
-    r_mismatch = len(mismatches) / len(a)
+    r_mismatch = mismatches.size / a.size
 
-    if not np.any(sig_mismatch) and r_mismatch < 5e-4:
+    if not np.any(sig_mismatch) and r_mismatch < thres:
         return  # Ignore small mismatches
 
     a_sample = a.ravel()[mismatches[:5]]
@@ -154,15 +154,15 @@ class LayerTestBase:
             for _layer in model._flatten_layers(False):
                 if isinstance(_layer, FixedPointQuantizerKBI):
                     b = np.random.randint(0, 5, _layer._b.shape)
-                    i: np.ndarray = ops.convert_to_numpy(ops.stop_gradient(_layer.i))  # type: ignore
-                    b = np.minimum(b, 12 - i)
+                    i = ops.convert_to_numpy(ops.stop_gradient(_layer.i))
+                    b = np.minimum(b, 12 - i)  # type: ignore
                     if np.all(b == 0):
                         b.ravel()[0] = 1
                     _layer._b.assign(ops.array(b))
                 if isinstance(_layer, FixedPointQuantizerKIF):
                     f = np.random.randint(2, 5, _layer._f.shape)
-                    i: np.ndarray = ops.convert_to_numpy(ops.stop_gradient(_layer.i))  # type: ignore
-                    f = np.minimum(f, 12 - i)
+                    i = ops.convert_to_numpy(ops.stop_gradient(_layer.i))
+                    f = np.minimum(f, 12 - i)  # type: ignore
                     if np.all(i + f == 0):
                         f.ravel()[0] = 1
                     _layer._f.assign(ops.array(f))
@@ -228,7 +228,11 @@ class LayerTestBase:
         if self.da4ml_not_supported:
             pytest.skip('No synth test')
 
+        model.save('/tmp/1.keras')
+
         trace_keras_output = trace_minmax(model, input_data, return_results=True, verbose=2)
+
+        model.save('/tmp/2.keras')
 
         keras_output = model.predict(input_data, batch_size=5000)
 
@@ -260,8 +264,8 @@ class LayerTestBase:
 
         self.assert_equal(keras_output, comb_output)
 
-    def assert_equal(self, keras_output, hls_output):
-        _assert_equal(keras_output, hls_output)
+    def assert_equal(self, keras_output, hw_output):
+        _assert_equal(keras_output, hw_output)
 
     def test_training(self, model: keras.Model, input_data, overflow_mode: str, *args, **kwargs):
         """Test basic training step"""

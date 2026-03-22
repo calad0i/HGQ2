@@ -5,7 +5,7 @@ import pytest
 from hgq.config import LayerConfigScope, QuantizerConfigScope
 from hgq.layers import QConvT1D, QConvT2D, QDenseT
 
-from .base import CtxGlue, LayerTestBase
+from .base import CtxGlue, LayerTestBase, _assert_equal
 
 
 class TableTestBase(LayerTestBase):
@@ -37,6 +37,9 @@ class TableTestBase(LayerTestBase):
         )
         scope_l = LayerConfigScope(beta0=0.0, enable_ebops=True)
         return CtxGlue(scope_w, scope_a, scope_t, scope_l)
+
+    def assert_equal(self, keras_output, hw_output):
+        _assert_equal(keras_output, hw_output, 2e-4)
 
 
 class TestDenseT(TableTestBase):
