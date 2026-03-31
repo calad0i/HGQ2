@@ -13,7 +13,7 @@ class StopOnCollapse(Callback):
 
     Monitor EBOPs and stop training when it falls below threshold:
     ```python
-    stop_on_collapse = StopOnCollapse(stop_condition=1e6, stop_monitor='ebops', stop_mode='min', patience=0, verbose=1)
+    stop_on_collapse = StopOnCollapse(stop_condition=1e4, stop_monitor='ebops', stop_mode='min', patience=0, verbose=1)
     model.fit(..., callbacks=[stop_on_collapse])
     ```
 
