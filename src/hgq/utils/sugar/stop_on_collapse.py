@@ -47,6 +47,8 @@ class StopOnCollapse(Callback):
         self.verbose = verbose
         self.patience = patience
 
+        self.counter = 0
+
     def get_condition(self, monitor, stop_mode):
         if stop_mode == 'min':
             return monitor <= self.stop_condition
@@ -61,8 +63,15 @@ class StopOnCollapse(Callback):
         monitor = logs.get(self.stop_monitor)
 
         if monitor is not None and self.get_condition(monitor, self.stop_mode):
-            if self.verbose > 0:
-                print(
-                    f'\nEpoch {epoch + 1}: stopping training as {self.stop_monitor} has collapsed to {monitor} (threshold: {self.stop_condition}).'
-                )
-            self.model.stop_training = True
+
+            if self.counter > self.patience:
+
+                if self.verbose > 0:
+                    print(
+                        f'Epoch {epoch + 1}: stopping training as {self.stop_monitor} has collapsed to {monitor} (threshold: {self.stop_condition}).'
+                    )
+                self.model.stop_training = True
+            self.counter += 1
+        else:
+            self.counter = 0
+        
