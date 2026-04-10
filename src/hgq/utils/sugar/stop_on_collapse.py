@@ -19,7 +19,7 @@ class StopOnCollapse(Callback):
 
     Monitor accuracy for 5 class classification and stop training when model collapses to random guessing:
     ```python
-    stop_on_collapse = StopOnCollapse(stop_condition=0.21, stop_monitor='accuracy', stop_mode='min', patience=0, verbose=1)
+    stop_on_collapse = StopOnCollapse(stop_condition=0.21, stop_monitor='val_accuracy', stop_mode='min', patience=0, verbose=1)
     model.fit(..., callbacks=[stop_on_collapse])
     ```
 
