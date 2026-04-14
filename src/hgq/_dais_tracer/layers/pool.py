@@ -40,7 +40,8 @@ class ReplayPool(ReplayOperationBase):
         keras.layers.GlobalMaxPooling3D,
     )
 
-    def call(self, inputs: FixedVariableArray) -> FixedVariableArray:
+    def call(self, inputs: FixedVariableArray, mask: None = None) -> FixedVariableArray:
+        assert mask is None, 'Masking is not supported in pooling layers.'
         cname = self.op.__class__.__name__
         if 'Max' in cname:
             op = 'max'
@@ -80,7 +81,7 @@ class ReplayPool(ReplayOperationBase):
             x = x.reshape(x.shape[:-1] + (-1, ch))
 
             if padding == 'same':
-                mask = symbolic_extract_patches(
+                _mask = symbolic_extract_patches(
                     np.ones(inputs.shape, dtype=np.int32),
                     pool_size,
                     strides,
@@ -89,16 +90,16 @@ class ReplayPool(ReplayOperationBase):
                     data_format='channels_last',
                 ).reshape(x.shape)
             elif padding == 'valid':
-                mask = np.ones(x.shape, dtype=np.int32)
+                _mask = np.ones(x.shape, dtype=np.int32)
             else:
                 raise ValueError(f'Unknown padding type: {padding}')
 
             if op == 'max':
-                _vars = np.where(mask, x, -2147483648)
+                _vars = np.where(_mask, x, -2147483648)  # type: ignore
                 x = FixedVariableArray(_vars, x.solver_options)
                 out = np.max(x, axis=-2)  # type: ignore
             elif op == 'avg':
-                out = np.sum(x, axis=-2) / np.sum(mask, axis=-2)  # type: ignore
+                out = np.sum(x, axis=-2) / np.sum(_mask, axis=-2)  # type: ignore
             else:
                 raise ValueError(f'Unknown pooling operation: {op}')
 
