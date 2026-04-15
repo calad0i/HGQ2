@@ -39,9 +39,9 @@ def parse_model(model: keras.Model):
     return [operators[i] for i in range(max(operators.keys()), -1, -1)]
 
 
-def replace_tensors(tensor_map: dict[KerasTensor, FixedVariableArray], obj: Any) -> Any:
+def replace_tensors(tensor_map: dict[str, FixedVariableArray], obj: Any) -> Any:
     if isinstance(obj, KerasTensor):
-        return tensor_map[obj]
+        return tensor_map[obj.name]
     if isinstance(obj, list):
         return [replace_tensors(tensor_map, o) for o in obj]
     if isinstance(obj, tuple):
@@ -77,7 +77,9 @@ def _apply_nn(
         inputs = (inputs,)
 
     assert len(model.inputs) == len(inputs), f'Model has {len(model.inputs)} inputs, got {len(inputs)}'
-    tensor_map = {keras_tensor: da_tensor for keras_tensor, da_tensor in zip(model.inputs, inputs)}
+    tensor_map: dict[str, FixedVariableArray] = {
+        keras_tensor.name: da_tensor for keras_tensor, da_tensor in zip(model.inputs, inputs)
+    }
 
     _inputs = _flatten_arr(inputs)
 
@@ -86,7 +88,7 @@ def _apply_nn(
 
     for ops in parse_model(model):
         for op in ops:
-            assert all(t in tensor_map for t in op.requires)
+            assert all(t.name in tensor_map for t in op.requires)
             args = replace_tensors(tensor_map, op.args)
             kwargs: dict[str, Any] = replace_tensors(tensor_map, op.kwargs)
             if op.operation.__class__ is keras.layers.InputLayer:
@@ -98,31 +100,32 @@ def _apply_nn(
 
             if isinstance(op.operation, keras.Model):
                 sub_model = op.operation._functional if isinstance(op.operation, keras.Sequential) else op.operation
-                outputs: tuple[FixedVariableArray, ...] = _apply_nn(
+                _dump: dict[str, tuple[FixedVariableArray, ...]] = _apply_nn(
                     sub_model,
                     args,
                     verbose=verbose,
-                    dump=False,
+                    dump=True,
                     n_nested=n_nested + 1,
                 )  # type: ignore
             else:
                 mirror_op = _registry[op.operation.__class__](op.operation)
-                outputs = mirror_op(*args, **kwargs)
+                _dump = mirror_op(*args, **kwargs)
             if verbose:
-                comb = comb_trace(_inputs, _flatten_arr(outputs))
+                comb = comb_trace(_inputs, _flatten_arr(_dump['final']))
                 print(f' cumcost: {comb.cost}, latency: {comb.latency[1]}')
 
-            for keras_tensor, da_tensor in zip(op.produces, outputs):
-                tensor_map[keras_tensor] = da_tensor
+            for keras_tensor, da_tensor in zip(op.produces, _dump['final']):
+                tensor_map[keras_tensor.name] = da_tensor
 
     if verbose and n_nested:
         indent = '    ' * (n_nested - 1)
         print(f'{indent}<- exit', end='')
 
+    final = tuple(tensor_map[keras_tensor] for keras_tensor in model.outputs)
     if not dump:
-        return tuple(tensor_map[keras_tensor] for keras_tensor in model.outputs)
-    else:
-        return {k.name: v for k, v in tensor_map.items()}
+        return final
+
+    return {k: v for k, v in tensor_map.items()}
 
 
 class HGQ2DAISTracer(DAISTracerPluginBase):

@@ -54,6 +54,9 @@ class HandlerRegMeta(type):
         return cls
 
 
+ARR_or_tuple_ARR = tuple[FixedVariableArray, ...] | FixedVariableArray
+
+
 class ReplayOperationBase(metaclass=HandlerRegMeta):
     handles: tuple[type, ...] = ()
     __activation_handled__ = False
@@ -64,18 +67,37 @@ class ReplayOperationBase(metaclass=HandlerRegMeta):
         assert isinstance(layer, self.handles)
         self.op: Any = layer
 
-    def call(self, *args, **kwargs) -> tuple[FixedVariableArray, ...] | FixedVariableArray: ...
+    def call(self, *args, **kwargs) -> ARR_or_tuple_ARR | dict[str, ARR_or_tuple_ARR]: ...
 
-    def __call__(self, *args, **kwargs) -> tuple[FixedVariableArray, ...]:
+    @staticmethod
+    def _normalize_to_tuple(
+        v: FixedVariableArray | FixedVariable | tuple[FixedVariableArray | FixedVariable, ...],
+    ) -> tuple[FixedVariableArray, ...]:
+        if isinstance(v, FixedVariableArray):
+            return (v,)
+        elif isinstance(v, FixedVariable):
+            return (FixedVariableArray(np.array([v])),)
+        return tuple(FixedVariableArray(np.array(x)) if isinstance(x, FixedVariable) else x for x in v)
+
+    def _wrap_call(self, *args, **kwargs) -> dict[str, tuple[FixedVariableArray, ...]]:
+        r = self.call(*args, **kwargs)
+        if isinstance(r, dict):
+            r = {k: self._normalize_to_tuple(v) for k, v in r.items()}
+        else:
+            r = {'final': self._normalize_to_tuple(r)}
+        return r
+
+    def __call__(self, *args, **kwargs) -> dict[str, tuple[FixedVariableArray, ...]]:
         assert all(not isinstance(a, FixedVariableArray) for a in kwargs.values())
 
         if not isinstance(self.op, hgq.layers.QLayerBase):
-            r = self.call(*args, **kwargs)
-            return r if isinstance(r, tuple) else (r,)
+            r = self._wrap_call(*args, **kwargs)
+            return r
 
         layer: hgq.layers.QLayerBase = self.op
         assert kwargs.pop('training', False) is False, 'Training mode is not supported in mirror operation'
 
+        trace: dict[str, tuple[FixedVariableArray, ...]] = {}
         if not self.__input_quantizer_handled__:
             assert len(args) == 1
             inputs = args[0]
@@ -87,22 +109,20 @@ class ReplayOperationBase(metaclass=HandlerRegMeta):
                 else:
                     assert isinstance(layer.iq, Quantizer), f'Expected iq to be a Quantizer, got {type(layer.iq)}'
                     inputs = mirror_quantizer(layer.iq, inputs)
+                trace['post_iq'] = (inputs,) if not isinstance(inputs, tuple) else inputs
 
-            outputs = self.call(inputs, **kwargs)
+            outputs = self._wrap_call(inputs, **kwargs)
         else:
-            outputs = self.call(*args, **kwargs)
-        if isinstance(outputs, FixedVariable):
-            outputs = FixedVariableArray(np.array([outputs]))
+            outputs = self._wrap_call(*args, **kwargs)
+        trace.update(outputs)
+        trace['post_call'] = trace['final']
 
         if not self.__activation_handled__:
             activation = getattr(layer, 'activation', keras.activations.linear)
             if activation is not keras.activations.linear:
                 if activation is keras.activations.relu:
-                    if isinstance(outputs, tuple):
-                        assert len(outputs) == 1, 'ReLU activation is expected to have a single output'
-                        outputs = (relu(outputs[0]),)
-                    else:
-                        outputs = relu(outputs)
+                    assert len(trace['post_call']) == 1, 'ReLU activation is expected to have a single output'
+                    trace['final'] = (relu(trace['post_call'][0]),)
                 else:
                     raise NotImplementedError(
                         f'Activation {activation} is not allowed in activation= field for common layers.'
@@ -110,17 +130,14 @@ class ReplayOperationBase(metaclass=HandlerRegMeta):
                     )
 
         if layer.enable_oq and not self.__output_quantizer_handled__:
-            if isinstance(outputs, tuple):
-                assert isinstance(layer.oq, MultipleQuantizers)
-                outputs = tuple(mirror_quantizer(q, v) for q, v in zip(layer.oq.quantizers, outputs))
+            if isinstance(layer.oq, MultipleQuantizers):
+                trace['post_oq'] = tuple(mirror_quantizer(q, v) for q, v in zip(layer.oq.quantizers, trace['final']))
             else:
                 assert isinstance(layer.oq, Quantizer)
-                outputs = mirror_quantizer(layer.oq, outputs)
+                trace['post_oq'] = (mirror_quantizer(layer.oq, trace['final'][0]),)
+            trace['final'] = trace['post_oq']
 
-        if isinstance(outputs, (FixedVariableArray, np.ndarray)):
-            outputs = (outputs,)
-
-        return outputs
+        return trace
 
 
 class ReplayQuantizer(ReplayOperationBase):

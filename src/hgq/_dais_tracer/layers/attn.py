@@ -120,7 +120,7 @@ class ReplayMHA(ReplayOperationBase):
                 attention_mask = np.expand_dims(attention_mask, axis=mask_expansion_axis)
             attention_mask = attention_mask[0]
 
-        return ReplayQSoftmax(op._softmax)(attention_scores[0], mask=attention_mask)[0][None]
+        return ReplayQSoftmax(op._softmax)(attention_scores[0], mask=attention_mask)['final'][0][None]
 
     def _compute_attention(self, op: QMultiHeadAttention, query, key, value, attention_mask=None, training=None):
         # Take the dot product between "query" and "key" to get the raw
@@ -164,7 +164,7 @@ class ReplayMHA(ReplayOperationBase):
         query, key, value = query[None], key[None], value[None]
 
         attention_output, attention_scores = self._compute_attention(op, query, key, value, _attention_mask)
-        attention_output = ReplayQDense(op._output_dense)(attention_output[0])[0]
+        attention_output = ReplayQDense(op._output_dense)(attention_output[0])['final'][0]
 
         if op.enable_oq:
             attention_output = mirror_quantizer(op.oq, attention_output)
@@ -193,8 +193,8 @@ class ReplayQLinformerAttention(ReplayMHA):
         value = value if value is not None else query
         key = key if key is not None else value
         op: QLinformerAttention = self.op
-        key = ReplayQDense(op._lin_k_proj)(key)[0]
-        value = ReplayQDense(op._lin_v_proj)(value)[0]
+        key = ReplayQDense(op._lin_k_proj)(key)['final'][0]
+        value = ReplayQDense(op._lin_v_proj)(value)['final'][0]
         return super().call(
             query,
             value,
@@ -213,7 +213,7 @@ class ReplaySALTAttention(ReplayMHA):
     def _masked_softmax(self, op, attention_scores, attention_mask=None):
         self.op: QSALTAttention
         if self.op.conv_size > 0:
-            attention_scores = ReplayQConv(self.op.conv)(attention_scores[0])[0][None]
+            attention_scores = ReplayQConv(self.op.conv)(attention_scores[0])['final'][0][None]
         return super()._masked_softmax(op, attention_scores, attention_mask)
 
     def call(
@@ -240,8 +240,8 @@ class ReplaySALTAttention(ReplayMHA):
         if self.op.n_v_pad > 0:
             value = np.pad(value, [[0, self.op.n_v_pad], [0, 0]], mode='constant', constant_values=0)  # type: ignore
             value = np.reshape(value, self.op._v_reshape_to[1:])  # type: ignore
-        key = ReplayQDense(op._lin_k_proj)(key)[0]
-        value = ReplayQDense(op._lin_v_proj)(value)[0]
+        key = ReplayQDense(op._lin_k_proj)(key)['final'][0]
+        value = ReplayQDense(op._lin_v_proj)(value)['final'][0]
         return super().call(
             query,
             value,

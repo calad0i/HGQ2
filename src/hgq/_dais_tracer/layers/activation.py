@@ -39,7 +39,7 @@ class ReplayReLU(ReplayOperationBase):
             z_cond = inputs.ravel()
 
         neg_part = ((inputs[None] - th) * neg).ravel()
-        out = np.array([c.msb_mux(n, p) if c.low < 0 else p for c, n, p in zip(z_cond, neg_part, pos_part)])
+        out = np.array([c.msb_mux(n, p) if c.low < 0 else p for c, n, p in zip(z_cond, neg_part, pos_part)])  # type: ignore
 
         return FixedVariableArray(out.reshape(inputs.shape), inputs.solver_options)
 
@@ -74,13 +74,13 @@ class ReplayQSoftmax(ReplayOperationBase):
                 inputs = np.where(mask, inputs, low)  # type: ignore
             inputs = np.amax(inputs, axis=op.axes, keepdims=True) - inputs  # type: ignore
 
-        exp_inp = ReplayQFunctionLUT(op.exp_table)(inputs[0])[0]
+        exp_inp = ReplayQFunctionLUT(op.exp_table)(inputs[0])['final'][0]
 
         if mask is not None:
             exp_inp = mask * exp_inp
 
         sums = np.sum(exp_inp[None], axis=op.axes, keepdims=True)[0]  # type: ignore
-        divisor = ReplayQFunctionLUT(op.inv_table)(sums)[0]
+        divisor = ReplayQFunctionLUT(op.inv_table)(sums)['final'][0]
 
         return exp_inp * divisor
 
