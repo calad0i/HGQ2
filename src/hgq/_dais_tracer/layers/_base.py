@@ -137,6 +137,8 @@ class ReplayOperationBase(metaclass=HandlerRegMeta):
                 trace['post_oq'] = (mirror_quantizer(layer.oq, trace['final'][0]),)
             trace['final'] = trace['post_oq']
 
+        trace['final'] = trace.pop('final')
+
         return trace
 
 

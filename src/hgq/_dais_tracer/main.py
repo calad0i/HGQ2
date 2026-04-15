@@ -19,6 +19,19 @@ class OpObj:
     requires: tuple[KerasTensor, ...]
 
 
+class MaybeRename:
+    def __init__(self):
+        self.counter: dict[str, int] = {}
+
+    def __call__(self, name: str) -> str:
+        if name not in self.counter:
+            self.counter[name] = 0
+            return name
+        else:
+            self.counter[name] += 1
+            return f'{name}#{self.counter[name]}'
+
+
 def parse_model(model: keras.Model):
     if isinstance(model, keras.Sequential):
         model = model._functional
@@ -51,13 +64,12 @@ def replace_tensors(tensor_map: dict[str, FixedVariableArray], obj: Any) -> Any:
     return obj
 
 
-def _apply_nn(
+def _trace_model(
     model: keras.Model,
     inputs: FixedVariableArray | Sequence[FixedVariableArray],
     verbose: bool = False,
-    dump: bool = False,
     n_nested: int = 0,
-) -> tuple[FixedVariableArray, ...] | dict[str, FixedVariableArray]:
+) -> dict[str, tuple[FixedVariableArray, ...]]:
     """
     Apply a keras model to a fixed variable array or a sequence of fixed variable arrays.
 
@@ -67,11 +79,8 @@ def _apply_nn(
         The keras model to apply.
     inputs : FixedVariableArray or Sequence[FixedVariableArray]
         The input fixed variable array or sequence of fixed variable arrays.
-
-    Returns
-    -------
-    tuple of FixedVariableArray
-        A tuple containing the output(s) of the model as FixedVariableArray.
+    verbose : bool, optional
+        Whether to print the trace, by default False
     """
     if isinstance(inputs, FixedVariableArray):
         inputs = (inputs,)
@@ -85,6 +94,9 @@ def _apply_nn(
 
     if verbose and n_nested:
         print(' -> enter:')
+
+    trace: dict[str, tuple[FixedVariableArray, ...]] = {}
+    maybe_rename = MaybeRename()
 
     for ops in parse_model(model):
         for op in ops:
@@ -100,11 +112,10 @@ def _apply_nn(
 
             if isinstance(op.operation, keras.Model):
                 sub_model = op.operation._functional if isinstance(op.operation, keras.Sequential) else op.operation
-                _dump: dict[str, tuple[FixedVariableArray, ...]] = _apply_nn(
+                _dump: dict[str, tuple[FixedVariableArray, ...]] = _trace_model(
                     sub_model,
                     args,
                     verbose=verbose,
-                    dump=True,
                     n_nested=n_nested + 1,
                 )  # type: ignore
             else:
@@ -117,29 +128,33 @@ def _apply_nn(
             for keras_tensor, da_tensor in zip(op.produces, _dump['final']):
                 tensor_map[keras_tensor.name] = da_tensor
 
+            name = maybe_rename(op.operation.name)
+            for k, v in _dump.items():
+                kk = f'{name}/{k}' if n_nested != 0 else f'/{name}/{k}'
+                trace[kk] = v
+
     if verbose and n_nested:
         indent = '    ' * (n_nested - 1)
         print(f'{indent}<- exit', end='')
 
-    final = tuple(tensor_map[keras_tensor] for keras_tensor in model.outputs)
-    if not dump:
-        return final
+    final = tuple(tensor_map[keras_tensor.name] for keras_tensor in model.outputs)
+    trace['final'] = final
 
-    return {k: v for k, v in tensor_map.items()}
+    return trace
 
 
 class HGQ2DAISTracer(DAISTracerPluginBase):
     model: keras.Model
 
     def apply_model(self, verbose: bool, inputs: tuple[FixedVariableArray, ...]):
-        dump: dict[str, FixedVariableArray] = _apply_nn(
+        dump = {'inputs': inputs}
+        _dump = _trace_model(
             self.model,
             inputs,
             verbose=verbose,
-            dump=True,
-        )  # type: ignore
-        output_names = [out.name for out in self.model.outputs]
-        return dump, output_names
+        )
+        dump.update(_dump)
+        return dump, ['final']
 
     def get_input_shapes(self) -> list[tuple[int, ...]] | None:
         shapes = [inp.shape[1:] for inp in self.model.inputs]
