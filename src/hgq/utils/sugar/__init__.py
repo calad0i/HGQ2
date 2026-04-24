@@ -5,6 +5,7 @@ from .early_stopping_ebops import EarlyStoppingWithEbopsThres
 from .ebops import FreeEBOPs
 from .pareto import ParetoFront
 from .pbar import PBar
+from .stop_on_collapse import StopOnCollapse
 
 __all__ = [
     'BetaPID',
@@ -15,4 +16,5 @@ __all__ = [
     'FreeEBOPs',
     'PBar',
     'ParetoFront',
+    'StopOnCollapse'
 ]
