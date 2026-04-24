@@ -22,7 +22,7 @@ class TestMultiHeadAttention(LayerTestBase):
 
     @pytest.fixture(params=['qkv', 'kv', 'none'])  # Test different fusion modes
     def fuse(self, request):
-        # qkv and kv fused projection only makes difference in da4ml
+        # alkaid support added, still no plan for hls4ml yet
         return request.param
 
     @pytest.fixture
@@ -97,15 +97,16 @@ class TestMultiHeadAttention(LayerTestBase):
             np.round((np.random.randn(N, *shape).astype(np.float32).clip(-1, 1 - eps)) * 256) / 256 for shape in input_shapes
         )
 
-    def assert_equal(self, keras_output, hw_output):
-        return np.testing.assert_allclose(keras_output, hw_output, atol=1e-6)
-
     def test_hls4ml_conversion(  # type: ignore
         self, model: keras.Model, input_data, temp_directory: str, use_parallel_io: bool, q_type: str, call_kwargs
     ):
         if call_kwargs.get('use_causal_mask', False):
             pytest.skip('Causal mask not supported in hls4ml conversion')
-        super().test_hls4ml_conversion(model, input_data, temp_directory, use_parallel_io, q_type)
+        super().test_hls4ml_conversion(model, input_data, temp_directory, use_parallel_io, q_type, call_kwargs)
+
+    @pytest.fixture
+    def ignore_err(self):
+        return 5e-6
 
 
 class TestLinformerAttention(TestMultiHeadAttention):

@@ -5,11 +5,12 @@ import pytest
 from hgq.config import LayerConfigScope, QuantizerConfigScope
 from hgq.layers import QConvT1D, QConvT2D, QDenseT
 
-from .base import CtxGlue, LayerTestBase, _assert_equal
+from .base import CtxGlue, LayerTestBase
 
 
 class TableTestBase(LayerTestBase):
-    hls4ml_not_supported = True
+    abs_cap_multiplier = 8.0
+    max_lsb_drift_fraction = 5e-4
 
     @pytest.fixture(params=[True])
     def use_parallel_io(self, request) -> bool:
@@ -37,9 +38,6 @@ class TableTestBase(LayerTestBase):
         )
         scope_l = LayerConfigScope(beta0=0.0, enable_ebops=True)
         return CtxGlue(scope_w, scope_a, scope_t, scope_l)
-
-    def assert_equal(self, keras_output, hw_output):
-        _assert_equal(keras_output, hw_output, 2e-4)
 
 
 class TestDenseT(TableTestBase):

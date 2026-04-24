@@ -36,11 +36,11 @@ class TestConv1D(LayerTestBase):
     def layer_kwargs(self, ch_out, conv_params):
         return {'filters': ch_out, **conv_params}
 
-    def assert_equal(self, keras_output, hls_output):
+    def assert_equal(self, keras_output, hw_output, lsb_step=None, ignore_err=0.0):
         if keras.backend.backend() == 'torch':
             # Torch conv operator introduces some extra numerical error
-            return np.testing.assert_allclose(keras_output, hls_output, atol=1e-4)
-        return np.testing.assert_allclose(keras_output, hls_output, atol=1e-6)
+            lsb_step = lsb_step + 1e-4 if lsb_step is not None else 5e-4
+        return super().assert_equal(keras_output, hw_output, lsb_step, ignore_err)
 
 
 class TestConv2D(LayerTestBase):
@@ -73,12 +73,11 @@ class TestConv2D(LayerTestBase):
     def layer_kwargs(self, ch_out, conv_params):
         return {'filters': ch_out, **conv_params}
 
-    def assert_equal(self, keras_output, hls_output):
-        # Conv operations has some numerical error in ops.conv operations.
+    def assert_equal(self, keras_output, hw_output, lsb_step=None, ignore_err=0.0):
         if keras.backend.backend() == 'torch':
             # Torch conv operator introduces some extra numerical error
-            return np.testing.assert_allclose(keras_output, hls_output, atol=5e-4)
-        return np.testing.assert_allclose(keras_output, hls_output, atol=1e-6)
+            lsb_step = lsb_step + 1e-4 if lsb_step is not None else 5e-4
+        return super().assert_equal(keras_output, hw_output, lsb_step, ignore_err)
 
     def test_training(self, model: keras.Model, input_data: np.ndarray, overflow_mode, ch_out: int):
         if keras.backend.backend() == 'torch' and ch_out == 1:

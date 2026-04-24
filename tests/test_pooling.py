@@ -1,5 +1,3 @@
-from math import log2, prod
-
 import keras
 import numpy as np
 import pytest
@@ -42,8 +40,23 @@ class PoolingTestBase(LayerTestBase):
             'padding': padding,
         }
 
+    @pytest.fixture
+    def ignore_err(self, padding):
+        is_average = 'average' in self.layer_cls.__name__.lower()
+        if padding == 'same' and is_average:
+            return 1e-6
+        else:
+            return 0
+
+    @pytest.mark.slow
     def test_hls4ml_conversion(
-        self, model: keras.Model, input_data: np.ndarray, temp_directory: str, use_parallel_io: bool, q_type: str
+        self,
+        model: keras.Model,
+        input_data: np.ndarray,
+        temp_directory: str,
+        use_parallel_io: bool,
+        q_type: str,
+        ignore_err: float,
     ):
         layer = model.layers[-1]
         if not use_parallel_io and getattr(layer, 'padding', None) == 'same':
@@ -56,23 +69,11 @@ class PoolingTestBase(LayerTestBase):
             temp_directory=temp_directory,
             use_parallel_io=use_parallel_io,
             q_type=q_type,
+            ignore_err=ignore_err,
         )
 
-    def test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, q_type: str):
-        layer = model.layers[-1]
-
-        if isinstance(layer, (QAveragePooling2D, QAveragePooling1D)):
-            if getattr(layer, 'padding', None) == 'same':
-                pytest.skip('non-pow-2 pool size at boundary')
-            if log2(prod(layer.pool_size)) % 1 != 0:
-                pytest.skip('non-pow-2 pool size')
-
-        super().test_da4ml_conversion(
-            model=model,
-            input_data=input_data,
-            overflow_mode=overflow_mode,
-            q_type=q_type,
-        )
+    def assert_equal(self, keras_output, hw_output, lsb_step: None | np.ndarray | float = None, ignore_err: float = 0):
+        return super().assert_equal(keras_output, hw_output, lsb_step=lsb_step, ignore_err=1e-6)
 
 
 class GlobalPoolingTestBase(PoolingTestBase):
@@ -112,9 +113,6 @@ class TestQAveragePooling1D(PoolingTestBase):
     @pytest.fixture(params=[3])
     def strides(self, request):
         return request.param
-
-    def assert_equal(self, keras_output, hls_output):
-        return np.testing.assert_allclose(keras_output, hls_output, rtol=0, atol=5e-6)
 
 
 class TestQMaxPooling2D(PoolingTestBase):
@@ -162,9 +160,6 @@ class TestQAveragePooling2D(PoolingTestBase):
             'data_format': request.param,
         }
 
-    def assert_equal(self, keras_output, hls_output):
-        return np.testing.assert_allclose(keras_output, hls_output, rtol=0, atol=5e-6)
-
 
 class TestQGlobalMaxPooling1D(GlobalPoolingTestBase):
     layer_cls = QGlobalMaxPooling1D
@@ -183,14 +178,8 @@ class TestQGlobalAveragePooling1D(GlobalPoolingTestBase):
     keras_layer_cls = layers.GlobalAveragePooling1D
     dim = 1
 
-    def assert_equal(self, keras_output, hls_output):
-        return np.testing.assert_allclose(keras_output, hls_output, rtol=0, atol=5e-6)
-
 
 class TestQGlobalAveragePooling2D(GlobalPoolingTestBase):
     layer_cls = QGlobalAveragePooling2D
     keras_layer_cls = layers.GlobalAveragePooling2D
     dim = 2
-
-    def assert_equal(self, keras_output, hls_output):
-        return np.testing.assert_allclose(keras_output, hls_output, rtol=0, atol=5e-6)

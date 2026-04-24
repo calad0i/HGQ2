@@ -50,6 +50,7 @@ def configure_backend():
             import jax
 
             jax.config.update('jax_disable_jit', True)
+            jax.config.update('jax_default_matmul_precision', 'float32')
         case _:
             raise ValueError(f'Unknown backend: {backend}')
 
@@ -100,3 +101,20 @@ def pytest_sessionfinish(session, exitstatus):
     for path in root.glob('*'):
         if path.is_dir() and not any(path.iterdir()):
             path.rmdir()
+
+
+def pytest_addoption(parser):
+    parser.addoption('--skip-slow', action='store_true', default=False, help='skip slow tests')
+
+
+def pytest_configure(config):
+    config.addinivalue_line('markers', 'slow: mark test as slow to run')
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption('--skip-slow'):
+        # --runslow given in cli: do not skip slow tests
+        skip_slow = pytest.mark.skip(reason='need --runslow option to run')
+        for item in items:
+            if 'slow' in item.keywords:
+                item.add_marker(skip_slow)

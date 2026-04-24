@@ -73,6 +73,7 @@ class TestSoftmax(LayerTestBase):
 
         np.testing.assert_allclose(hgq_output_np, ref_output_np, atol=1e-6)
 
+    @pytest.mark.slow
     def test_hls4ml_conversion(  # type: ignore
         self, model: Model, input_data, temp_directory: str, use_parallel_io: bool, q_type: str, axis: int
     ):
