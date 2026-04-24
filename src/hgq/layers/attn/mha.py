@@ -86,7 +86,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 'oq_conf': self._qkvo_oq_conf,
                 'enable_ebops': self.enable_ebops,
                 'beta0': self._beta0.clone(),
-                'parallelization_factor': self.parallelization_factor,
+                #'parallelization_factor': self.parallelization_factor,
             }
         )
         return common_kwargs

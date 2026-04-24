@@ -1,6 +1,7 @@
 from .base import QLayerBase, QLayerBaseMultiInputs, QLayerBaseSingleInput
 from .dense import QBatchNormDense, QDense
 from .einsum_dense import QEinsumDense
+from .embedding import QEmbedding
 
 __all__ = [
     'QLayerBaseSingleInput',
@@ -9,4 +10,5 @@ __all__ = [
     'QEinsumDense',
     'QDense',
     'QBatchNormDense',
+    'QEmbedding',
 ]
