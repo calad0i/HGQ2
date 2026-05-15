@@ -28,7 +28,7 @@ from hgq.config import LayerConfigScope, QuantizerConfigScope
 
 # First, set up quantization configuration
 # For weights, use SAT_SYM overflow mode
-with QuantizerConfigScope(q_type='kif', place='weight', overflow_mode='SAT_SYM', round_mode='RND'):
+with QuantizerConfigScope(q_type='kbi', place='weight', overflow_mode='SAT_SYM', round_mode='RND'):
     # For activations, use different config
     with QuantizerConfigScope(q_type='kif', place='datalane', overflow_mode='WRAP', round_mode='RND'):
         with LayerConfigScope(enable_ebops=True, beta0=1e-5):
