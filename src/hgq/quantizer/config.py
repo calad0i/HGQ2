@@ -74,7 +74,7 @@ class FloatConfig(QuantizerConfigBase):
 
 kbi_weight_default = KBIConfig(
     k0=True,
-    b0=4,
+    b0=8,
     i0=2,
     round_mode='RND',
     overflow_mode='SAT_SYM',
@@ -93,7 +93,7 @@ kbi_weight_default = KBIConfig(
 
 kbi_datalane_default = KBIConfig(
     k0=True,
-    b0=4,
+    b0=8,
     i0=2,
     round_mode='RND',
     overflow_mode='WRAP',
@@ -111,8 +111,8 @@ kbi_datalane_default = KBIConfig(
 
 kif_weight_default = KIFConfig(
     k0=True,
-    i0=4,
-    f0=2,
+    i0=2,
+    f0=6,
     round_mode='RND',
     overflow_mode='SAT_SYM',
     ic=MinMax(-23, 23),
@@ -130,8 +130,8 @@ kif_weight_default = KIFConfig(
 
 kif_datalane_default = KIFConfig(
     k0=True,
-    i0=4,
-    f0=2,
+    i0=2,
+    f0=6,
     round_mode='RND',
     overflow_mode='WRAP',
     ic=MinMax(-23, 23),

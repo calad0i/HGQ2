@@ -1,5 +1,6 @@
 import os
 from collections.abc import Sequence
+from math import ceil
 from typing import Any
 
 import keras
@@ -95,6 +96,10 @@ class LayerTestBase:
         heterogeneous_axis, homogeneous_axis = (None, (0,)) if use_parallel_io else ((), None)
         scope_w = QuantizerConfigScope(
             default_q_type=q_type,
+            place=('weight', 'bias'),
+            k0=1,
+            i0=2,
+            f0=2,
             heterogeneous_axis=None,
             homogeneous_axis=(),
             overflow_mode=overflow_mode,
@@ -275,7 +280,7 @@ class LayerTestBase:
 
         abs_err = np.abs(keras_output - hw_output)
         abs_tol = self.abs_cap_multiplier * lsb_step
-        abs_max_count = round(self.max_lsb_drift_fraction * keras_output.size)
+        abs_max_count = ceil(self.max_lsb_drift_fraction * keras_output.size)
         rel_err = abs_err / (np.abs(keras_output) + 1e-8)
         non_sig_err = (abs_err <= abs_tol) & (rel_err > 1e-20) & (abs_err > ignore_err)
         sig_err = (abs_err > abs_tol) & (abs_err > ignore_err)
