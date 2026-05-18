@@ -75,8 +75,8 @@ class TestSoftmax(LayerTestBase):
 
     @pytest.mark.slow
     def test_hls4ml_conversion(  # type: ignore
-        self, model: Model, input_data, temp_directory: str, use_parallel_io: bool, q_type: str, axis: int
+        self, model: Model, input_data, temp_directory: str, use_parallel_io: bool, q_type: str, axis: int, ignore_err: float
     ):
         if not use_parallel_io and axis != -1:
             pytest.skip('hls4ml only support axis=-1 with io_stream')
-        return super().test_hls4ml_conversion(model, input_data, temp_directory, use_parallel_io, q_type)
+        return super().test_hls4ml_conversion(model, input_data, temp_directory, use_parallel_io, q_type, ignore_err)
