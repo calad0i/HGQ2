@@ -97,6 +97,7 @@ class TestMultiHeadAttention(LayerTestBase):
             np.round((np.random.randn(N, *shape).astype(np.float32).clip(-1, 1 - eps)) * 256) / 256 for shape in input_shapes
         )
 
+    @pytest.mark.slow
     def test_hls4ml_conversion(  # type: ignore
         self, model: keras.Model, input_data, temp_directory: str, use_parallel_io: bool, q_type: str, call_kwargs
     ):
