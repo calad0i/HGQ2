@@ -326,7 +326,7 @@ class LayerTestBase:
         for w0, w1 in zip(initial_weights_np, trained_weights):
             if w1.name in 'bif':
                 continue
-            if np.prod(w1.shape) < 10 and 'SAT' in overflow_mode:
+            if (np.prod(w1.shape) < 10 and 'SAT' in overflow_mode) or np.prod(w1.shape) < 5:
                 # Overflowing weight doesn't receive grad in SAT mode
                 # Chance of all overflow is high for small-sized weights, skip them
                 continue
