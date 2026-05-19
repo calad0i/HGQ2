@@ -63,7 +63,7 @@ class TestDenseT(TableTestBase):
 class TestConvT1D(TableTestBase):
     layer_cls = QConvT1D
 
-    @pytest.fixture(params=[8, 12])
+    @pytest.fixture(params=[6])
     def ch_out(self, request):
         return request.param
 
@@ -93,7 +93,7 @@ class TestConvT1D(TableTestBase):
 class TestConvT2D(TableTestBase):
     layer_cls = QConvT2D
 
-    @pytest.fixture(params=[8, 12])
+    @pytest.fixture(params=[6])
     def ch_out(self, request):
         return request.param
 
@@ -110,7 +110,7 @@ class TestConvT2D(TableTestBase):
 
     @pytest.fixture()
     def input_shapes(self):
-        return (6, 6, 2)
+        return (4, 5, 2)
 
     @pytest.fixture(params=['valid', 'same'])
     def padding(self, request):

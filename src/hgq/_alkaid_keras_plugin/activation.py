@@ -19,7 +19,7 @@ class _QFunctionLUT(QLayerMixin, ReplayOperationBase):
             ky = keras.ops.convert_to_tensor(y[None])
             if isinstance(op, QAffinedUnaryFunctionLUT):
                 ky = ky * op.scale + op.bias
-            return keras.ops.convert_to_numpy(op.activation(ky)[0])
+            return keras.ops.convert_to_numpy(op.activation(ky)[0])  # type: ignore
 
         return x.apply(activation)
 

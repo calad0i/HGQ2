@@ -1,4 +1,5 @@
 import numpy as np
+from alkaid.converter.builtin.keras.layers import ReplayOperationBase
 from alkaid.trace import FVArray
 
 from hgq.layers.attn import (
@@ -7,7 +8,7 @@ from hgq.layers.attn import (
     QSALTAttention,
 )
 
-from ._base import ReplayOperationBase, mirror_quantizer, to_np_arr
+from ._base import mirror_quantizer, to_np_arr
 from .activation import _QSoftmax
 from .core import _QConv, _QDense
 
@@ -50,8 +51,8 @@ def _fused_qkv_proj(query: FVArray, key: FVArray, value: FVArray, op: QMultiHead
         KV = np.einsum(op._key_dense.equation, key, to_KV_kernel) + to_KV_bias
         K, V = np.split(KV, 2, axis=-1)  # type: ignore
 
-        K = mirror_quantizer(op._key_dense.oq, K) if op._key_dense.enable_oq else K
-        V = mirror_quantizer(op._value_dense.oq, V) if op._value_dense.enable_oq else V
+        K = mirror_quantizer(op._key_dense.oq, K) if op._key_dense.enable_oq else K  # type: ignore
+        V = mirror_quantizer(op._value_dense.oq, V) if op._value_dense.enable_oq else V  # type: ignore
 
         q_query = mirror_quantizer(op._query_dense.iq, query) if op._query_dense.iq is not None else query
         Q = np.einsum(op._query_dense.equation, q_query, query_qk) + query_qb

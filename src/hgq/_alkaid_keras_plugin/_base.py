@@ -1,27 +1,9 @@
-"""Building blocks for the Alkaid-keras second-level plugin.
-
-``QLayerMixin`` is placed to the LEFT of a pure-Keras handler class (e.g.
-``alkaid.converter.builtin.keras.layers.dense.ReplayDense``). Its
-responsibilities are:
-
-* Remap ``_load_weight('kernel'|'bias')`` to HGQ's pre-quantized
-  ``qkernel``/``qbias`` so the base handler's math transparently reads the
-  quantized weights.
-* Strip the leading ``Q`` in ``_dispatch_key()`` so Alkaid's name-dispatching
-  handlers route correctly for HGQ Q-variants.
-* Apply HGQ input/output quantizers (``layer.iq`` / ``layer.oq``) around the
-  pure handler's ``call()``.
-
-The ``__input_quantizer_handled__`` / ``__output_quantizer_handled__`` flags
-default to False and can be overridden on a subclass when the handler itself
-manages that quantization (e.g. ``_QDenseTable``, ``_QMHA``).
-"""
-
 from collections.abc import Sequence
 from typing import Any
 
+import keras
 import numpy as np
-from alkaid.converter.builtin.keras.layers._base import ReplayOperationBase, to_np_arr  # noqa: F401
+from alkaid.converter.builtin.keras.layers._base import to_np_arr  # noqa: F401
 from alkaid.trace import FVArray
 from alkaid.trace.ops import quantize
 
@@ -50,6 +32,7 @@ class QLayerMixin:
     __qweight_remap__ = {'kernel': 'qkernel', 'bias': 'qbias'}
     __input_quantizer_handled__ = False
     __output_quantizer_handled__ = False
+    op: 'keras.Operation'
 
     def _load_weight(self, name: str) -> np.ndarray:
         mapped = self.__qweight_remap__.get(name, name)
@@ -66,8 +49,7 @@ class QLayerMixin:
 
     def __call__(self, *args: Any, **kwargs: Any):
         layer = self.op
-        if not isinstance(layer, hgq.layers.QLayerBase):
-            return super().__call__(*args, **kwargs)
+        assert isinstance(layer, hgq.layers.QLayerBase)
 
         if not self.__input_quantizer_handled__ and getattr(layer, 'enable_iq', False):
             iq = layer.iq
@@ -80,7 +62,7 @@ class QLayerMixin:
                 first = mirror_quantizer(iq, first)
             args = (first, *rest)
 
-        trace = super().__call__(*args, **kwargs)
+        trace = super().__call__(*args, **kwargs)  # type: ignore
 
         if not self.__output_quantizer_handled__ and getattr(layer, 'enable_oq', False):
             oq = layer.oq
