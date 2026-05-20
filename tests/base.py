@@ -8,7 +8,6 @@ import numpy as np
 import pytest
 from alkaid.converter import trace_model
 from alkaid.trace import trace as comb_trace
-from hls4ml.converters import convert_from_keras_model
 from keras import ops
 
 from hgq.config import LayerConfigScope, QuantizerConfigScope
@@ -212,6 +211,8 @@ class LayerTestBase:
         if self.hls4ml_not_supported:
             pytest.skip('No synth test')
         """Test hls4ml conversion and bit-exactness"""
+
+        from hls4ml.converters import convert_from_keras_model
 
         trace_keras_output_0 = trace_minmax(model, input_data, return_results=True, verbose=2)
 
