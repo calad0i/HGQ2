@@ -2,7 +2,7 @@ from typing import overload
 
 from keras import ops
 from keras.layers import Layer
-from keras.saving import deserialize_keras_object, register_keras_serializable
+from keras.saving import deserialize_keras_object, register_keras_serializable, serialize_keras_object
 
 from .config import QuantizerConfig, all_quantizer_keys
 
@@ -61,7 +61,7 @@ class Quantizer(Layer):
 
     def get_config(self):
         config = super().get_config()
-        config['config'] = self.config
+        config['config'] = serialize_keras_object(self.config)
         return config
 
     @classmethod

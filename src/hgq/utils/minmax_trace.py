@@ -85,7 +85,7 @@ def trace_minmax(
         if getattr(layer, 'enable_ebops', False):
             record[layer.name] = int(layer.ebops)  # type: ignore
 
-    if verbose:
+    if verbose and record:
         width = max(max(map(len, record.keys())), 5)
         for k, v in record.items():
             print(f'{k:{width}}: {v}')
