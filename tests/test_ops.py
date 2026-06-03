@@ -1,5 +1,6 @@
 from math import log2, prod
 
+import keras
 import numpy as np
 import pytest
 from keras import layers, ops
@@ -190,3 +191,41 @@ class TestMeanPow2(TestQSum):
         else:
             scale = 1.0 / prod(input_shapes[ax % (len(input_shapes) + 1) - 1] for ax in axes)
         return 2.0 ** round(log2(scale))
+
+
+class TestMultiInputNoIQ:
+    """Regression: QLayerBaseMultiInputs must build/run/round-trip with enable_iq=False.
+
+    build() used to read ``iq_confs`` unconditionally while __init__ only created the
+    real ``_iq_confs`` attribute when enable_iq was True (it was assigned to a typo'd
+    name otherwise), so every multi-input layer raised AttributeError at build time --
+    which also made such models impossible to save or load.
+    """
+
+    @pytest.mark.parametrize('layer_cls', [QAdd, QSubtract, QMultiply, QMaximum, QMinimum])
+    def test_build_and_forward(self, layer_cls):
+        with QuantizerConfigScope(default_q_type='dummy'):
+            a, b = keras.Input((4,)), keras.Input((4,))
+            model = keras.Model([a, b], layer_cls(enable_iq=False)([a, b]))
+        xa, xb = np.ones((2, 4), 'float32'), 2 * np.ones((2, 4), 'float32')
+        assert ops.convert_to_numpy(model([xa, xb])).shape == (2, 4)
+
+    def test_forward_value(self):
+        with QuantizerConfigScope(default_q_type='dummy'):
+            a, b = keras.Input((4,)), keras.Input((4,))
+            model = keras.Model([a, b], QAdd(enable_iq=False)([a, b]))
+        xa, xb = np.ones((2, 4), 'float32'), 2 * np.ones((2, 4), 'float32')
+        out = ops.convert_to_numpy(model([xa, xb]))
+        np.testing.assert_allclose(out, 3.0, atol=1e-6)
+
+    @pytest.mark.parametrize('fmt', ['keras', 'h5'])
+    def test_roundtrip(self, fmt, tmp_path):
+        with QuantizerConfigScope(default_q_type='dummy'):
+            a, b = keras.Input((4,)), keras.Input((4,))
+            model = keras.Model([a, b], QAdd(enable_iq=False)([a, b]))
+        xa, xb = np.ones((2, 4), 'float32'), 2 * np.ones((2, 4), 'float32')
+        ref = ops.convert_to_numpy(model([xa, xb]))
+        path = f'{tmp_path}/m.{fmt}'
+        model.save(path)
+        loaded = keras.models.load_model(path)
+        np.testing.assert_array_equal(ref, ops.convert_to_numpy(loaded([xa, xb])))

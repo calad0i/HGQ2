@@ -339,7 +339,7 @@ class QLayerBaseMultiInputs(QLayerBase):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self._iqs_confs = None
+        self._iq_confs = None
         if self.enable_iq:
             self._iq_confs = iq_confs if iq_confs is not None else QuantizerConfig('default', 'datalane')
 
@@ -360,6 +360,9 @@ class QLayerBaseMultiInputs(QLayerBase):
         n_input = len(input_shape)
         for _input_shape in input_shape:
             assert isinstance(_input_shape, Iterable), f'each element of input_shape must be iterable, got {_input_shape}'
+
+        if not self.enable_iq:
+            return
 
         if isinstance(self.iq_confs, QuantizerConfig):
             self._iq_confs = [self.iq_confs] * n_input
