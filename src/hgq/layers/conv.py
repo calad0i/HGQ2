@@ -166,7 +166,7 @@ class QConv1D(QBaseConv):
             inputs = ops.pad(inputs, self._compute_causal_padding())
             padding = 'valid'
 
-        qinputs = self.iq(inputs, training=training)
+        qinputs = self.iq(inputs, training=training) if self.enable_iq else inputs
         qkernel = self.kq(self._kernel, training=training)
 
         outputs = ops.conv(

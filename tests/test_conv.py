@@ -1,7 +1,9 @@
 import keras
 import numpy as np
 import pytest
+from keras import ops
 
+from hgq.config import QuantizerConfigScope
 from hgq.layers import QConv1D, QConv2D
 
 from .base import LayerTestBase
@@ -83,3 +85,38 @@ class TestConv2D(LayerTestBase):
         if keras.backend.backend() == 'torch' and ch_out == 1:
             pytest.skip('Torch runtime error for unknown reason when ch_out is 1.')
         return super().test_training(model, input_data, overflow_mode)
+
+
+class TestConv1DNoIQ:
+    """Regression: QConv1D.call must guard self.iq when enable_iq=False.
+
+    QConv1D.call overrode QBaseConv.call but read self.iq unconditionally, so
+    QConv1D(enable_iq=False) built fine yet crashed at forward (the iq property
+    raises when input quantization is disabled). QConv2D/QConv3D inherit the
+    guarded base call and were unaffected.
+    """
+
+    @pytest.mark.parametrize('kwargs', [
+        {'padding': 'causal', 'groups': 4},
+        {'padding': 'valid'},
+        {'padding': 'same'},
+    ])
+    def test_build_and_forward(self, kwargs):
+        with QuantizerConfigScope(default_q_type='dummy'):
+            x = keras.Input((16, 4))
+            model = keras.Model(x, QConv1D(4, 3, enable_iq=False, **kwargs)(x))
+        xin = np.random.default_rng(0).standard_normal((2, 16, 4)).astype('float32')
+        y = ops.convert_to_numpy(model(xin, training=False))
+        assert y.shape[0] == 2 and y.shape[-1] == 4
+
+    @pytest.mark.parametrize('fmt', ['keras', 'h5'])
+    def test_roundtrip(self, fmt, tmp_path):
+        with QuantizerConfigScope(default_q_type='dummy'):
+            x = keras.Input((16, 4))
+            model = keras.Model(x, QConv1D(4, 3, padding='causal', groups=4, enable_iq=False)(x))
+        xin = np.random.default_rng(0).standard_normal((2, 16, 4)).astype('float32')
+        ref = ops.convert_to_numpy(model(xin, training=False))
+        path = f'{tmp_path}/m.{fmt}'
+        model.save(path)
+        loaded = keras.models.load_model(path)
+        np.testing.assert_array_equal(ref, ops.convert_to_numpy(loaded(xin, training=False)))
