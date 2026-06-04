@@ -2,9 +2,7 @@ import inspect
 from abc import ABCMeta
 from collections.abc import Callable, Iterable, Sequence
 from functools import wraps
-from warnings import warn
 
-import keras
 import numpy as np
 from keras import ops
 from keras.initializers import Constant, Initializer
@@ -114,30 +112,6 @@ class QLayerMeta(ABCMeta):
                 call.__signature__ = new_signature  # type: ignore
 
                 cls.call = call
-
-        original_build = cls.build
-
-        def check_collapsed_weight(self):
-            for k, w in self.__dict__.items():
-                if not isinstance(w, keras.Variable):
-                    continue
-                qw = getattr(self, f'q{w.name}', None)
-                if qw is None:
-                    continue
-                mse_fp, mse_q = ops.sqrt(ops.std(w) ** 2 + ops.mean(w) ** 2), ops.sqrt(ops.std(qw) ** 2 + ops.mean(qw) ** 2)
-                if mse_q + 1e-3 < mse_fp and mse_q / mse_fp < 0.5:
-                    warn(
-                        f'Quantization of weight {w.path} may have collapsed its dist: std(fp)={mse_fp:.2e} std(q)={mse_q:.2e} ratio={mse_q / mse_fp:.3f}. Consider adjust quantizer config.',
-                        stacklevel=3,
-                    )
-
-        @wraps(original_build)
-        def build(self, *args, **kwargs):
-            r = original_build(self, *args, **kwargs)
-            check_collapsed_weight(self)
-            return r
-
-        cls.build = build
 
         return super().__call__(*args, **kwargs)  # type: ignore
 
