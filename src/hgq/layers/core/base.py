@@ -339,7 +339,6 @@ class QLayerBaseMultiInputs(QLayerBase):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self._iqs_confs = None
         if self.enable_iq:
             self._iq_confs = iq_confs if iq_confs is not None else QuantizerConfig('default', 'datalane')
 
@@ -353,10 +352,13 @@ class QLayerBaseMultiInputs(QLayerBase):
 
     @property
     def iq_confs(self):
+        assert self.enable_iq, f'iq_confs has been disabled for {self.name}.'
         return self._iq_confs
 
     def build(self, input_shape):
         super().build(input_shape)
+        if not self.enable_iq or self._iq.built:
+            return
         n_input = len(input_shape)
         for _input_shape in input_shape:
             assert isinstance(_input_shape, Iterable), f'each element of input_shape must be iterable, got {_input_shape}'
