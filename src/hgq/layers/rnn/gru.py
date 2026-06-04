@@ -185,6 +185,15 @@ class QGRUCell(QLayerBase, GRUCell):
             self._bq = Quantizer(bq_conf, name=f'{self.name}_bq')
         self._rhq = Quantizer(rhq_conf, name=f'{self.name}_rhq')
 
+        # Weight-quantization caching slots. When the cache is active (set by
+        # QGRU.call for the duration of one forward pass over the sequence), the
+        # qkernel / qrecurrent_kernel / qbias properties return the pre-quantized
+        # values instead of re-running the weight quantizers on every timestep.
+        self._cache_active = False
+        self._cached_qkernel = None
+        self._cached_qrecurrent_kernel = None
+        self._cached_qbias = None
+
     @property
     def paq(self):
         return self._paq
@@ -221,10 +230,14 @@ class QGRUCell(QLayerBase, GRUCell):
 
     @property
     def qkernel(self):
+        if self._cache_active and self._cached_qkernel is not None:
+            return self._cached_qkernel
         return self.kq(self.kernel)
 
     @property
     def qrecurrent_kernel(self):
+        if self._cache_active and self._cached_qrecurrent_kernel is not None:
+            return self._cached_qrecurrent_kernel
         return self.rkq(self.recurrent_kernel)
 
     @property
@@ -232,6 +245,8 @@ class QGRUCell(QLayerBase, GRUCell):
         if not self.use_bias:
             raise AttributeError(f'bias has been disabled for {self.name}.')
         assert self.bq is not None
+        if self._cache_active and self._cached_qbias is not None:
+            return self._cached_qbias
         return self.bq(self.bias)
 
     def qactivation(self, x):
@@ -584,6 +599,26 @@ class QGRU(QRNN, GRU):
         self.use_cudnn = False
         self.parallelization_factor = parallelization_factor
         self._set_unroll()
+
+    def call(self, sequences, initial_state=None, mask=None, training=False):
+        # Pre-quantize the (recurrent) kernel and bias ONCE per forward, then
+        # activate the cell cache so the per-timestep qkernel / qrecurrent_kernel
+        # / qbias property reads reuse the cached tensors instead of re-running
+        # the weight quantizers on every timestep. On backends without a cuDNN
+        # GRU path (e.g. torch) the layer lowers to a per-timestep scan over the
+        # cell, so this collapses O(T) redundant weight-quantizer work (and the
+        # O(T) autograd intermediates it retains for BPTT) down to O(1).
+        cell = self.cell
+        try:
+            cell._cached_qkernel = cell.kq(cell.kernel)
+            cell._cached_qrecurrent_kernel = cell.rkq(cell.recurrent_kernel)
+            if cell.use_bias:
+                cell._cached_qbias = cell.bq(cell.bias)
+            cell._cache_active = True
+            return super().call(sequences, initial_state=initial_state, mask=mask, training=training)
+        finally:
+            cell._cache_active = False
+            cell._cached_qkernel = cell._cached_qrecurrent_kernel = cell._cached_qbias = None
 
     def get_config(self):
         base_config = super().get_config()
