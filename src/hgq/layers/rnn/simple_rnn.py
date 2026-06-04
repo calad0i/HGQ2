@@ -113,21 +113,43 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
 
     @property
     def qkernel(self):
-        return self.kq(self.kernel)
+        try:
+            return self._qkernel_cache
+        except AttributeError:
+            return self.kq(self.kernel)
 
     @property
     def qrecurrent_kernel(self):
-        return self.rkq(self.recurrent_kernel)
+        try:
+            return self._qrecurrent_kernel_cache
+        except AttributeError:
+            return self.rkq(self.recurrent_kernel)
 
     @property
     def qbias(self):
         if not self.use_bias:
-            return None
-        return self.bq(self.bias)  # type: ignore
+            raise AttributeError(f'bias has been disabled for {self.name}.')
+        assert self.bq is not None
+        try:
+            return self._qbias_cache
+        except AttributeError:
+            return self.bq(self.bias)
 
     @property
     def enable_sq(self):
         return self._enable_sq
+
+    def _set_weight_cache(self):
+        self._qkernel_cache = self.kq(self.kernel)
+        self._qrecurrent_kernel_cache = self.rkq(self.recurrent_kernel)
+        if self.use_bias:
+            self._qbias_cache = self.bq(self.bias)  # type: ignore
+
+    def _invalidate_weight_cache(self):
+        del self._qkernel_cache
+        del self._qrecurrent_kernel_cache
+        if self.use_bias:
+            del self._qbias_cache
 
     def __init__(
         self,
@@ -217,8 +239,6 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
         if training and rec_dp_mask is not None:
             prev_output = prev_output * rec_dp_mask
 
-        qkernel = self.kq(self.kernel, training=training)
-        qrecurrent_kernel = self.rkq(self.recurrent_kernel, training=training)
         if self.enable_sq:
             qstate = self.sq(prev_output, training=training)
         else:
@@ -226,11 +246,11 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
             qstate = prev_output
         qsequence = self.iq(sequence, training=training)
 
-        h = ops.matmul(qsequence, qkernel)
+        h = ops.matmul(qsequence, self.qkernel)
         if self.bias is not None:
-            h += self.bq(self.bias, training=training)  # type: ignore
+            h += self.qbias
 
-        output = h + ops.matmul(qstate, qrecurrent_kernel)  # type: ignore
+        output = h + ops.matmul(qstate, self.qrecurrent_kernel)  # type: ignore
 
         output = self.paq(output)
         output = self.activation(output)
@@ -366,6 +386,18 @@ class QRNN(RNN, metaclass=QLayerMeta):
     @property
     def ebops_factor(self):
         return self.cell.ebops_factor
+
+    def call(
+        self,
+        sequences,
+        initial_state=None,
+        mask=None,
+        training=False,
+    ):
+        self.cell._set_weight_cache()
+        ret = super().call(sequences, initial_state=initial_state, mask=mask, training=training)
+        self.cell._invalidate_weight_cache()
+        return ret
 
 
 @register_keras_serializable(package='hgq')

@@ -221,18 +221,39 @@ class QGRUCell(QLayerBase, GRUCell):
 
     @property
     def qkernel(self):
-        return self.kq(self.kernel)
+        try:
+            return self._qkernel_cache
+        except AttributeError:
+            return self.kq(self.kernel)
 
     @property
     def qrecurrent_kernel(self):
-        return self.rkq(self.recurrent_kernel)
+        try:
+            return self._qrecurrent_kernel_cache
+        except AttributeError:
+            return self.rkq(self.recurrent_kernel)
+
+    def _set_weight_cache(self):
+        self._qkernel_cache = self.kq(self.kernel)
+        self._qrecurrent_kernel_cache = self.rkq(self.recurrent_kernel)
+        if self.use_bias:
+            self._qbias_cache = self.bq(self.bias)  # type: ignore
+
+    def _invalidate_weight_cache(self):
+        del self._qkernel_cache
+        del self._qrecurrent_kernel_cache
+        if self.use_bias:
+            del self._qbias_cache
 
     @property
     def qbias(self):
         if not self.use_bias:
             raise AttributeError(f'bias has been disabled for {self.name}.')
         assert self.bq is not None
-        return self.bq(self.bias)
+        try:
+            return self._qbias_cache
+        except AttributeError:
+            return self.bq(self.bias)
 
     def qactivation(self, x):
         return self.paq(self.activation(x))
