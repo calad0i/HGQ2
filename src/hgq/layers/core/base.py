@@ -331,7 +331,7 @@ class QLayerBaseMultiInputs(QLayerBase):
 
     def build(self, input_shape):
         super().build(input_shape)
-        if not self.enable_iq or self._iq.built:
+        if not self.enable_iq:
             return
         n_input = len(input_shape)
         for _input_shape in input_shape:
