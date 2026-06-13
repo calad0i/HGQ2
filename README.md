@@ -80,19 +80,36 @@ If you use HGQ2 in your research, please consider citing the following paper:
 
 ```bibtex
 @inproceedings{hgq,
-author = {Sun, Chang and Que, Zhiqiang and Aarrestad, Thea and Loncar, Vladimir and Ngadiuba, Jennifer and Luk, Wayne and Spiropulu, Maria},
-title = {HGQ: High Granularity Quantization for Real-time Neural Networks on FPGAs},
-year = {2026},
-isbn = {9798400720796},
-publisher = {Association for Computing Machinery},
-address = {New York, NY, USA},
-url = {https://doi.org/10.1145/3748173.3779200},
-doi = {10.1145/3748173.3779200},
-booktitle = {Proceedings of the 2026 ACM/SIGDA International Symposium on Field Programmable Gate Arrays},
-pages = {79–91},
-numpages = {13},
-keywords = {quantization-aware training, fpga, real-time inference, neural networks, hardware-software codesign, low-latency, quantization},
-location = {USA},
-series = {FPGA '26}
+  author = {Sun, Chang and Que, Zhiqiang and Aarrestad, Thea and Loncar, Vladimir and Ngadiuba, Jennifer and Luk, Wayne and Spiropulu, Maria},
+  title = {HGQ: High Granularity Quantization for Real-time Neural Networks on FPGAs},
+  year = {2026},
+  isbn = {9798400720796},
+  publisher = {Association for Computing Machinery},
+  address = {New York, NY, USA},
+  url = {https://doi.org/10.1145/3748173.3779200},
+  doi = {10.1145/3748173.3779200},
+  booktitle = {Proceedings of the 2026 ACM/SIGDA International Symposium on Field Programmable Gate Arrays},
+  pages = {79–91},
+  numpages = {13},
+  keywords = {quantization-aware training, fpga, real-time inference, neural networks, hardware-software codesign, low-latency, quantization},
+  location = {USA},
+  series = {FPGA '26}
+}
+```
+
+If LUT-based layers are used, please also cite the following paper:
+
+```bibtex
+@inproceedings{hgq-lut,
+  author={Sun, Chang and Que, Zhiqiang and Zadeh, Bakhtiar and Liu, Qibin and Alvarez, Kevin H. and Luk, Wayne and Spiropulu, Maria},
+  booktitle={2026 IEEE 34th Annual International Symposium on Field-Programmable Custom Computing Machines (FCCM)},
+  title={HGQ-LUT: Fast LUT-Aware Training and Efficient Architectures for DNN Inference},
+  year={2026},
+  volume={},
+  number={},
+  pages={19-28},
+  keywords={Modeling;Table lookup;Training;Field programmable gate arrays;Timing;Manuals;Hardware;Accuracy;Neural networks;Elementary particles;machine learning;lookup-based inference;quantization;co-design;fpga},
+  doi={10.1109/FCCM68464.2026.00017},
+  series = {FCCM '26}
 }
 ```
