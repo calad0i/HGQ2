@@ -3,7 +3,7 @@ from typing import Any
 
 import keras
 import numpy as np
-from alkaid.converter.builtin.keras.layers._base import to_np_arr  # noqa: F401
+from alkaid.converter.builtin.keras.layers._base import ARR_or_tuple_ARR, to_np_arr
 from alkaid.trace import FVArray
 from alkaid.trace.ops import quantize
 
@@ -50,6 +50,7 @@ class QLayerMixin:
     def __call__(self, *args: Any, **kwargs: Any):
         layer = self.op
         assert isinstance(layer, hgq.layers.QLayerBase)
+        trace = dict[str, ARR_or_tuple_ARR]()
 
         if not self.__input_quantizer_handled__ and getattr(layer, 'enable_iq', False):
             iq = layer.iq
@@ -60,9 +61,10 @@ class QLayerMixin:
             else:
                 assert isinstance(iq, Quantizer)
                 first = mirror_quantizer(iq, first)
+            trace['post_iq'] = (first,) if not isinstance(first, tuple) else first
             args = (first, *rest)
 
-        trace = super().__call__(*args, **kwargs)  # type: ignore
+        trace.update(super().__call__(*args, **kwargs))  # type: ignore
 
         if not self.__output_quantizer_handled__ and getattr(layer, 'enable_oq', False):
             oq = layer.oq
