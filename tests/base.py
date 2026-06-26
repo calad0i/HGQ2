@@ -70,7 +70,7 @@ class LayerTestBase:
     layer_cls: type[QLayerBase] = QLayerBase
     custom_objects = {}
     hls4ml_not_supported = False
-    da4ml_not_supported = False
+    alkaid_not_supported = False
     abs_cap_multiplier: float = 1.0
     max_lsb_drift_fraction: float = 1e-6
 
@@ -243,7 +243,7 @@ class LayerTestBase:
         os.system(f"rm -rf '{temp_directory}/hls4ml_prj'")
 
     def test_alkaid_conversion(self, model: keras.Model, input_data, overflow_mode: str, q_type: str, ignore_err):
-        if self.da4ml_not_supported:
+        if self.alkaid_not_supported:
             pytest.skip('No synth test')
 
         model.save('/tmp/1.keras')
