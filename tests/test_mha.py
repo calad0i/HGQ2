@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from keras import ops
 
-from hgq.layers.attn import QLinformerAttention, QMultiHeadAttention, QSALTAttention
+from hgq.layers.attn import QLinformerAttention, QMultiHeadAttention, QMultiHeadAttentionT, QSALTAttention
 from hgq.quantizer.internal import FixedPointQuantizerKBI, FixedPointQuantizerKIF
 
 from .base import LayerTestBase
@@ -125,6 +125,42 @@ class TestLinformerAttention(TestMultiHeadAttention):
     @pytest.fixture
     def call_kwargs(self, input_shapes):
         return {}
+
+
+class TestMultiHeadAttentionT(TestMultiHeadAttention):
+    layer_cls = QMultiHeadAttentionT
+    hls4ml_not_supported = True
+
+    @pytest.fixture(params=[2])
+    def num_heads(self, request):
+        return request.param
+
+    @pytest.fixture(params=[4])
+    def key_dim(self, request):
+        return request.param
+
+    @pytest.fixture
+    def input_shapes(self):
+        return (2, 4, 8), (2, 4, 9), (2, 4, 10)
+
+    @pytest.fixture
+    def layer_kwargs(self, num_heads, key_dim):
+        return {'num_heads': num_heads, 'key_dim': key_dim, 'n_hl': 0}
+
+    @pytest.fixture
+    def input_data(self, input_shapes, N: int = 64):
+        eps = 2.0**-8
+        return tuple(
+            np.round((np.random.randn(N, *shape).astype(np.float32).clip(-1, 1 - eps)) * 256) / 256 for shape in input_shapes
+        )
+
+    def test_multi_axis_output_shape(self):
+        inputs = ops.ones((2, 5, 8))
+        layer = self.layer_cls(num_heads=2, key_dim=4, output_shape=(2, 3), n_hl=0)
+        outputs = layer(inputs)
+
+        assert outputs.shape == (2, 5, 2, 3)
+        assert layer.compute_output_shape(inputs.shape, inputs.shape) == (2, 5, 2, 3)
 
 
 class TestSALTAttention(TestMultiHeadAttention):
