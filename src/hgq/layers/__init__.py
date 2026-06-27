@@ -1,6 +1,6 @@
 from ..quantizer import Quantizer
 from .activation import QAffinedUnaryFunctionLUT, QUnaryFunctionLUT
-from .attn import QLinformerAttention, QMultiHeadAttention
+from .attn import QLinformerAttention, QMultiHeadAttention, QMultiHeadAttentionT
 from .batch_normalization import QBatchNormalization
 from .conv import QConv1D, QConv2D, QConv3D
 from .core import *
@@ -45,7 +45,7 @@ from .pooling import (
 )
 from .rnn import QGRU, QSimpleRNN
 from .softmax import QSoftmax
-from .table import QConvT1D, QConvT2D, QDenseT
+from .table import QConvT1D, QConvT2D, QDenseT, QEinsumDenseT
 
 __all__ = [
     'QUnaryFunctionLUT',
@@ -72,6 +72,7 @@ __all__ = [
     'QSubtract',
     'QLinformerAttention',
     'QMultiHeadAttention',
+    'QMultiHeadAttentionT',
     'QBatchNormDense',
     'QDense',
     'QMaxPool1D',
@@ -101,6 +102,7 @@ __all__ = [
     'QSimpleRNN',
     'QGRU',
     'QDenseT',
+    'QEinsumDenseT',
     'QConvT1D',
     'QConvT2D',
 ]

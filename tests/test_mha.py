@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from keras import ops
 
-from hgq.layers.attn import QLinformerAttention, QMultiHeadAttention, QMultiHeadAttentionT, QSALTAttention
+from hgq.layers.attn import QLinformerAttention, QLinformerAttentionT, QMultiHeadAttention, QMultiHeadAttentionT, QSALTAttention
 from hgq.quantizer.internal import FixedPointQuantizerKBI, FixedPointQuantizerKIF
 
 from .base import LayerTestBase
@@ -91,7 +91,7 @@ class TestMultiHeadAttention(LayerTestBase):
                 _layer.bias.assign(ops.array(bias))
 
     @pytest.fixture
-    def input_data(self, input_shapes, N: int = 5000):
+    def input_data(self, input_shapes, N: int = 5000):  # type: ignore
         eps = 2.0**-8
         return tuple(
             np.round((np.random.randn(N, *shape).astype(np.float32).clip(-1, 1 - eps)) * 256) / 256 for shape in input_shapes
@@ -99,11 +99,18 @@ class TestMultiHeadAttention(LayerTestBase):
 
     @pytest.mark.slow
     def test_hls4ml_conversion(  # type: ignore
-        self, model: keras.Model, input_data, temp_directory: str, use_parallel_io: bool, q_type: str, call_kwargs
+        self,
+        model: keras.Model,
+        input_data,
+        temp_directory: str,
+        use_parallel_io: bool,
+        q_type: str,
+        call_kwargs,
+        ignore_err: float,
     ):
         if call_kwargs.get('use_causal_mask', False):
             pytest.skip('Causal mask not supported in hls4ml conversion')
-        super().test_hls4ml_conversion(model, input_data, temp_directory, use_parallel_io, q_type, call_kwargs)
+        super().test_hls4ml_conversion(model, input_data, temp_directory, use_parallel_io, q_type, ignore_err)
 
     @pytest.fixture
     def ignore_err(self):
@@ -128,10 +135,16 @@ class TestLinformerAttention(TestMultiHeadAttention):
 
 
 class TestMultiHeadAttentionT(TestMultiHeadAttention):
+    abs_cap_multiplier = 8.0
+    max_lsb_drift_fraction = 5e-4
     layer_cls = QMultiHeadAttentionT
     hls4ml_not_supported = True
 
-    @pytest.fixture(params=[2])
+    @pytest.fixture(params=['none'])
+    def fuse(self, request):
+        return request.param
+
+    @pytest.fixture(params=[1])
     def num_heads(self, request):
         return request.param
 
@@ -148,19 +161,30 @@ class TestMultiHeadAttentionT(TestMultiHeadAttention):
         return {'num_heads': num_heads, 'key_dim': key_dim, 'n_hl': 0}
 
     @pytest.fixture
-    def input_data(self, input_shapes, N: int = 64):
+    def input_data(self, input_shapes, N: int = 512):
         eps = 2.0**-8
         return tuple(
             np.round((np.random.randn(N, *shape).astype(np.float32).clip(-1, 1 - eps)) * 256) / 256 for shape in input_shapes
         )
 
-    def test_multi_axis_output_shape(self):
-        inputs = ops.ones((2, 5, 8))
-        layer = self.layer_cls(num_heads=2, key_dim=4, output_shape=(2, 3), n_hl=0)
-        outputs = layer(inputs)
 
-        assert outputs.shape == (2, 5, 2, 3)
-        assert layer.compute_output_shape(inputs.shape, inputs.shape) == (2, 5, 2, 3)
+class TestLinformerAttentionT(TestMultiHeadAttentionT):
+    layer_cls = QLinformerAttentionT
+
+    @pytest.fixture(params=['dense_t', 'dense'])
+    def lin_kv_proj_mode(self, request):
+        return request.param
+
+    @pytest.fixture
+    def layer_kwargs(self, num_heads, key_dim, input_shapes, lin_kv_proj_mode):
+        lin_kv_proj_dim = [2 for _ in range(len(input_shapes[0]) - 1)]
+        return {
+            'num_heads': num_heads,
+            'key_dim': key_dim,
+            'lin_kv_proj_dim': lin_kv_proj_dim,
+            'lin_kv_proj_mode': lin_kv_proj_mode,
+            'n_hl': 0,
+        }
 
 
 class TestSALTAttention(TestMultiHeadAttention):

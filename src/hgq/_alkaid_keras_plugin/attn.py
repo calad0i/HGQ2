@@ -4,13 +4,17 @@ from alkaid.trace import FVArray
 
 from hgq.layers.attn import (
     QLinformerAttention,
+    QLinformerAttentionT,
     QMultiHeadAttention,
+    QMultiHeadAttentionT,
     QSALTAttention,
 )
+from hgq.layers.table import QEinsumDenseT
 
 from ._base import mirror_quantizer, to_np_arr
 from .activation import _QSoftmax
 from .core import _QConv, _QDense
+from .table import _QEinsumDenseTable
 
 
 def _fused_qkv_proj(query: FVArray, key: FVArray, value: FVArray, op: QMultiHeadAttention):
@@ -74,7 +78,7 @@ def _fused_qkv_proj(query: FVArray, key: FVArray, value: FVArray, op: QMultiHead
     return Q, K, V
 
 
-class ReplayMHA(ReplayOperationBase):
+class _QMHA(ReplayOperationBase):
     handles = (QMultiHeadAttention,)
     __input_quantizer_handled__ = True
     __output_quantizer_handled__ = True
@@ -171,8 +175,62 @@ class ReplayMHA(ReplayOperationBase):
         return attention_output
 
 
-class _QLinformerAttention(ReplayMHA):
+class _QMHAT(_QMHA):
+    handles = (QMultiHeadAttentionT,)
+
+    def _table_qkv_proj(self, query, key, value, op: QMultiHeadAttentionT):
+        Q = _QEinsumDenseTable(op._query_dense)(query)['final'][0]
+        K = _QEinsumDenseTable(op._key_dense)(key)['final'][0]
+        V = _QEinsumDenseTable(op._value_dense)(value)['final'][0]
+        return Q, K, V
+
+    def call(
+        self,
+        query: FVArray,
+        value: None | FVArray = None,
+        key: None | FVArray = None,
+        query_mask=None,
+        value_mask=None,
+        key_mask=None,
+        attention_mask=None,
+        return_attention_scores=False,
+        use_causal_mask=False,
+    ):
+        op: QMultiHeadAttentionT = self.op
+
+        value = query if value is None else value
+        key = value if key is None else key
+
+        _attention_mask = self._compute_attention_mask(
+            query,
+            value,
+            query_mask=query_mask,
+            value_mask=value_mask,
+            key_mask=key_mask,
+            attention_mask=attention_mask,
+            use_causal_mask=use_causal_mask,
+        )
+
+        query, key, value = self._table_qkv_proj(query, key, value, op)
+        attention_output, attention_scores = self._compute_attention(op, query, key, value, _attention_mask)
+        attention_output = _QEinsumDenseTable(op._output_dense)(attention_output)['final'][0]
+
+        if op.enable_oq:
+            attention_output = mirror_quantizer(op.oq, attention_output)
+
+        if return_attention_scores:
+            return attention_output, attention_scores
+        return attention_output
+
+
+class _QLinformerAttention(_QMHA):
     handles = (QLinformerAttention,)
+
+    @staticmethod
+    def _lin_proj(proj, x):
+        if isinstance(proj, QEinsumDenseT):
+            return _QEinsumDenseTable(proj)(x)['final'][0]
+        return _QDense(proj)(x)['final'][0]
 
     def call(
         self,
@@ -190,8 +248,8 @@ class _QLinformerAttention(ReplayMHA):
         value = value if value is not None else query
         key = key if key is not None else value
         op: QLinformerAttention = self.op
-        key = _QDense(op._lin_k_proj)(key)['final'][0]
-        value = _QDense(op._lin_v_proj)(value)['final'][0]
+        key = self._lin_proj(op._lin_k_proj, key)
+        value = self._lin_proj(op._lin_v_proj, value)
         return super().call(
             query,
             value,
@@ -204,7 +262,11 @@ class _QLinformerAttention(ReplayMHA):
         )
 
 
-class ReplaySALTAttention(ReplayMHA):
+class _QLinformerAttentionT(_QLinformerAttention, _QMHAT):
+    handles = (QLinformerAttentionT,)
+
+
+class ReplaySALTAttention(_QMHA):
     handles = (QSALTAttention,)
 
     def _masked_softmax(self, op, attention_scores, attention_mask=None):
@@ -249,6 +311,3 @@ class ReplaySALTAttention(ReplayMHA):
             attention_mask=attention_mask,
             return_attention_scores=return_attention_scores,
         )
-
-
-__all__ = ['ReplayMHA', '_QLinformerAttention', 'ReplaySALTAttention']

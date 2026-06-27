@@ -5,7 +5,7 @@ from keras import ops
 from ...quantizer.config import QuantizerConfig
 from ...utils.misc import gather_vars_to_kwargs
 from ..core.einsum_dense import QEinsumDense
-from .mha import QMultiHeadAttention
+from .mha import QMultiHeadAttention, QMultiHeadAttentionT
 
 
 class QLinformerAttention(QMultiHeadAttention):
@@ -44,14 +44,32 @@ class QLinformerAttention(QMultiHeadAttention):
         softmax_allow_heterogeneous_table: bool = False,
         parallelization_factor=-1,
         share_kv_proj=False,
+        lin_kv_proj_mode: Literal['dense', 'dense_t'] = 'dense',
         **kwargs,
     ):
         if fuse != 'none':
             raise ValueError(f'Only fuse="none" can be used for QLinformerAttention, but got fuse="{fuse}".')
-        kwargs = gather_vars_to_kwargs('self|lin_kv_proj_dim|share_kv_proj')
+        if lin_kv_proj_mode not in ('dense', 'dense_t'):
+            raise ValueError(f'lin_kv_proj_mode must be "dense" or "dense_t", got {lin_kv_proj_mode}.')
+        kwargs = gather_vars_to_kwargs('self|lin_kv_proj_dim|share_kv_proj|lin_kv_proj_mode')
         self._kv_proj_dim = (lin_kv_proj_dim,) if isinstance(lin_kv_proj_dim, int) else tuple(lin_kv_proj_dim)
         self.share_kv_proj = share_kv_proj
+        self._lin_kv_proj_mode = lin_kv_proj_mode
         super().__init__(**kwargs)
+
+    def _make_lin_kv_proj(self, equation: str, output_shape, name: str):
+        if self._lin_kv_proj_mode == 'dense_t':
+            if not hasattr(self, '_make_table_dense'):
+                raise ValueError('lin_kv_proj_mode="dense_t" requires QLinformerAttentionT.')
+            return self._make_table_dense(  # type: ignore
+                equation,
+                output_shape,
+                None,
+                name,
+                enable_iq=self.enable_iq,
+                enable_oq=self.enable_oq,
+            )
+        return QEinsumDense(equation, output_shape, bias_axes=None, **self._get_common_kwargs_for_sublayer())
 
     def build(self, query_shape, value_shape=None, key_shape=None):
         value_shape = value_shape or query_shape
@@ -94,15 +112,11 @@ class QLinformerAttention(QMultiHeadAttention):
         out_idx = ''.join(_out_idx)
         eq_lin_kv_proj = f'{inp_idx},{ker_idx}->{out_idx}'
 
-        self._lin_k_proj = QEinsumDense(
-            eq_lin_kv_proj, self._key_shape_proj[1:], bias_axes=None, **self._get_common_kwargs_for_sublayer()
-        )
+        self._lin_k_proj = self._make_lin_kv_proj(eq_lin_kv_proj, self._key_shape_proj[1:], 'lin_key')
         self._lin_k_proj.build(key_shape)
 
         if not self.share_kv_proj:
-            self._lin_v_proj = QEinsumDense(
-                eq_lin_kv_proj, self._value_shape_proj[1:], bias_axes=None, **self._get_common_kwargs_for_sublayer()
-            )
+            self._lin_v_proj = self._make_lin_kv_proj(eq_lin_kv_proj, self._value_shape_proj[1:], 'lin_value')
             self._lin_v_proj.build(value_shape)
         else:
             self._lin_v_proj = self._lin_k_proj
@@ -159,4 +173,59 @@ class QLinformerAttention(QMultiHeadAttention):
         config = super().get_config()
         config['lin_kv_proj_dim'] = self._kv_proj_dim
         config['share_kv_proj'] = self.share_kv_proj
+        config['lin_kv_proj_mode'] = self._lin_kv_proj_mode
+        if self._lin_kv_proj_mode == 'dense':
+            config['qkvo_kq_conf'] = self._qkvo_kq_conf
+            config['qkvo_bq_conf'] = self._qkvo_bq_conf
         return config
+
+
+class QLinformerAttentionT(QLinformerAttention, QMultiHeadAttentionT):
+    """Table-projection Linformer attention."""
+
+    def __init__(
+        self,
+        num_heads,
+        lin_kv_proj_dim,
+        key_dim,
+        value_dim=None,
+        dropout=0.0,
+        use_bias=True,
+        output_shape=None,
+        attention_axes=None,
+        kernel_initializer='glorot_uniform',
+        bias_initializer='zeros',
+        kernel_regularizer=None,
+        bias_regularizer=None,
+        activity_regularizer=None,
+        kernel_constraint=None,
+        bias_constraint=None,
+        seed=None,
+        fuse: Literal['none'] = 'none',
+        qkvo_iq_conf: QuantizerConfig | None = None,
+        qkvo_toq_conf: QuantizerConfig | None = None,
+        qkvo_oq_conf: QuantizerConfig | None = None,
+        softmax_iq_conf: QuantizerConfig | None = None,
+        softmax_exp_iq_conf: QuantizerConfig | None = None,
+        softmax_exp_oq_conf: QuantizerConfig | None = None,
+        softmax_inv_iq_conf: QuantizerConfig | None = None,
+        softmax_inv_oq_conf: QuantizerConfig | None = None,
+        softmax_oq_conf: QuantizerConfig | None = None,
+        stable_softmax=True,
+        softmax_allow_heterogeneous_table: bool = False,
+        parallelization_factor=-1,
+        share_kv_proj=False,
+        lin_kv_proj_mode: Literal['dense', 'dense_t'] = 'dense_t',
+        n_hl: int = 1,
+        d_hl: int = 8,
+        subnn_activation='tanh',
+        table_spec: int | tuple[int, int] = (6, 5),
+        batch_norm: bool = False,
+        bn_center: bool = True,
+        bn_scale: bool = True,
+        bn_momentum: float = 0.99,
+        bn_epsilon: float = 0.001,
+        **kwargs,
+    ):
+        kwargs = gather_vars_to_kwargs('self')
+        super().__init__(**kwargs)

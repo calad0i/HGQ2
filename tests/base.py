@@ -221,7 +221,6 @@ class LayerTestBase:
             output_dir=f'{temp_directory}/hls4ml_prj',
             backend='Vitis',
             io_type='io_parallel' if use_parallel_io else 'io_stream',
-            hls_config={'Model': {'Precision': 'ap_fixed<1,0>', 'ReuseFactor': 1, 'Strategy': 'distributed_arithmetic'}},
             bit_exact=True,
         )
 

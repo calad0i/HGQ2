@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from hgq.config import LayerConfigScope, QuantizerConfigScope
-from hgq.layers import QConvT1D, QConvT2D, QDenseT
+from hgq.layers import QConvT1D, QConvT2D, QDenseT, QEinsumDenseT
 
 from .base import CtxGlue, LayerTestBase
 
@@ -58,6 +58,33 @@ class TestDenseT(TableTestBase):
     @pytest.fixture
     def layer_kwargs(self, n_out, activation, batch_norm):
         return {'n_out': n_out, 'activation': activation, 'batch_norm': batch_norm}
+
+
+class TestEinsumDenseT(TableTestBase):
+    layer_cls = QEinsumDenseT
+    hls4ml_not_supported = True
+
+    @pytest.fixture(params=[False, True])
+    def batch_norm(self, request) -> bool:
+        return request.param
+
+    @pytest.fixture(
+        params=[
+            ('Bij,ijk->Bik', (3, 4), (3, 6), 'ik'),
+            ('Babc,bcd->Babd', (3, 4, 5), (3, 4, 2), 'bd'),
+        ]
+    )
+    def einsum_case(self, request):
+        return request.param
+
+    @pytest.fixture
+    def input_shapes(self, einsum_case):
+        return einsum_case[1]
+
+    @pytest.fixture
+    def layer_kwargs(self, einsum_case, batch_norm):
+        equation, _, output_shape, bias_axes = einsum_case
+        return {'equation': equation, 'output_shape': output_shape, 'bias_axes': bias_axes, 'n_hl': 0, 'batch_norm': batch_norm}
 
 
 class TestConvT1D(TableTestBase):
