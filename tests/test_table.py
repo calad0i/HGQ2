@@ -22,19 +22,28 @@ class TableTestBase(LayerTestBase):
 
     @pytest.fixture
     def ctx_scope(self, q_type: str, overflow_mode: str, round_mode: str):
-        scope_t = QuantizerConfigScope(place='table', homogeneous_axis=(0,), overflow_mode='SAT')
+        weight_round_mode = 'RND' if q_type == 'kbi' else round_mode
+        scope_t = QuantizerConfigScope(
+            default_q_type=q_type, place='table', homogeneous_axis=(0,), overflow_mode='SAT', round_mode=round_mode
+        )
         scope_w = QuantizerConfigScope(
             default_q_type=q_type,
+            place=('weight', 'bias'),
             heterogeneous_axis=None,
             homogeneous_axis=(),
             overflow_mode=overflow_mode,
-            round_mode=round_mode,
+            round_mode=weight_round_mode,
             br=None,
             ir=None,
             fr=None,
         )
         scope_a = QuantizerConfigScope(
-            default_q_type=q_type, place='datalane', overflow_mode=overflow_mode, round_mode=round_mode, homogeneous_axis=(0,)
+            q_type='kif',
+            default_q_type='kif',
+            place='datalane',
+            overflow_mode=overflow_mode,
+            round_mode=round_mode,
+            homogeneous_axis=(0,),
         )
         scope_l = LayerConfigScope(beta0=0.0, enable_ebops=True)
         return CtxGlue(scope_w, scope_a, scope_t, scope_l)

@@ -102,13 +102,13 @@ class LayerTestBase:
             heterogeneous_axis=None,
             homogeneous_axis=(),
             overflow_mode=overflow_mode,
-            round_mode=round_mode,
+            round_mode='RND' if q_type == 'kbi' else round_mode,
             br=None,
             ir=None,
             fr=None,
         )
         scope_a = QuantizerConfigScope(
-            default_q_type=q_type,
+            default_q_type='kif',
             place=('datalane', 'table'),
             heterogeneous_axis=heterogeneous_axis,
             homogeneous_axis=homogeneous_axis,
