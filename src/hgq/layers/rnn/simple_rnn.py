@@ -295,12 +295,12 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
         return self._enable_ebops and self.standalone
 
 
-def _is_wrap_quantizer(q: Quantizer) -> bool:
+def _is_jax_scan_unsafe_wrap_quantizer(q: Quantizer) -> bool:
     if not isinstance(q, Quantizer):
         return False
     if not isinstance(q.quantizer, FixedPointQuantizerBase):
         return False
-    return q.quantizer.overflow_mode == 'WRAP'
+    return q.quantizer.overflow_mode == 'WRAP' and q.quantizer.trainable
 
 
 @register_keras_serializable(package='hgq')
@@ -309,9 +309,8 @@ class QRNN(RNN, metaclass=QLayerMeta):
 
     def _set_unroll(self):
         backend = keras.backend.backend()
-        has_wrap_quantizers = any(_is_wrap_quantizer(layer) for layer in self._flatten_layers())
-        if backend == 'jax' and has_wrap_quantizers:
-            # JAX tracer issues when using jax scan with WRAP quantizers (range update is side effect)
+        has_scan_unsafe_wrap_quantizers = any(_is_jax_scan_unsafe_wrap_quantizer(layer) for layer in self._flatten_layers())
+        if backend == 'jax' and has_scan_unsafe_wrap_quantizers:
             # Force unrolling in this case
             if self.unroll is False:
                 warn('JAX backend does not support WRAP quantizers with rolled RNNs. Forcing unrolling.')
@@ -404,8 +403,10 @@ class QRNN(RNN, metaclass=QLayerMeta):
 class QSimpleRNN(QRNN, SimpleRNN):
     """Quantized Fully-connected RNN where the output is to be fed back as the new input.
 
-    When the jax backend is used, if any `WRAP` quantizers are used, unroll will
-    be set to `True` to avoid the side effect issue in the `jax.lax.scan` loop.
+    When the jax backend is used, if any trainable `WRAP` quantizers are used,
+    unroll will be set to `True` to avoid the side effect issue in the
+    `jax.lax.scan` loop. Fixed non-trainable `WRAP` quantizers can use rolled
+    execution.
 
     Parameters
     ----------
@@ -454,9 +455,9 @@ class QSimpleRNN(QRNN, SimpleRNN):
         If True, the last state for each sample at index i in a batch will be used as initial
         state for the sample of index i in the following batch. Default: False.
     unroll : bool or None, optional
-        None is equivalent to False. However, for the JAX backend, if
-        any `WRAP` quantizers are used, unroll will be set to True
-        to avoid the side effect issue in the `jax.lax.scan` loop.
+        None is equivalent to False. However, for the JAX backend, if any
+        trainable `WRAP` quantizers are used, unroll will be set to True to
+        avoid the side effect issue in the `jax.lax.scan` loop.
         If True, the network will be unrolled,
         else a symbolic loop will be used.
         Unrolling can speed-up a RNN,
