@@ -43,11 +43,7 @@ class _QEinsum(QLayerMixin, ReplayOperationBase):
             inputs = _inputs
         assert len(inputs) == 2
         if isinstance(op, QEinsum):
-            # Alkaid preserves the batch dim as size-1, and QEinsum.equation
-            # already includes a batch letter — use inputs as-is.
             return einsum(op.equation, inputs[0], inputs[1])  # type: ignore
-        # QDot: build the equation from shapes, mirroring Alkaid's handling of
-        # keras.layers.Dot (shared batch letter at index 0).
         dim0, dim1 = inputs[0].ndim, inputs[1].ndim
         letters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'[: dim0 + dim1 - 1]
         sub0 = letters[:dim0]

@@ -9,7 +9,6 @@ from .base import LayerTestBase
 
 
 class RNNTestBase(LayerTestBase):
-    alkaid_not_supported = True
     hls4ml_not_supported = True
     layer_cls = QRNN
     keras_layer_cls = layers.RNN
