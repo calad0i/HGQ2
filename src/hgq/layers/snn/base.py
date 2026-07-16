@@ -10,6 +10,7 @@ from keras.saving import deserialize_keras_object, register_keras_serializable, 
 from keras.src.layers.input_spec import InputSpec
 
 from ...config import QuantizerConfig
+from ...config.layer import global_config
 from ...constraints import MinMax
 from ...quantizer import Quantizer
 from ..core.base import QLayerBase, QLayerBaseSingleInput
@@ -300,9 +301,9 @@ class QSimpleSNNCell(QLayerBaseSingleInput, SpikingNeuralCell):
             learn_graded_spikes_factor=learn_graded_spikes_factor,
             iq_conf=iq_conf,
             oq_conf=oq_conf,
-            enable_ebops=enable_ebops,
-            enable_iq=enable_iq,
-            enable_oq=enable_oq,
+            enable_ebops=enable_ebops if enable_ebops is not None else global_config['enable_ebops'],
+            enable_iq=enable_iq if enable_iq is not None else global_config['enable_iq'],
+            enable_oq=enable_oq if enable_oq is not None else global_config['enable_oq'],
             beta0=beta0,
             ebops_factor=ebops_factor,
             **kwargs,
@@ -311,7 +312,7 @@ class QSimpleSNNCell(QLayerBaseSingleInput, SpikingNeuralCell):
             graded_spikes_factor_q_conf or QuantizerConfig('default', 'weight'),
             name=f'{self.name}_graded_spikes_factor_q',
         )
-        self._enable_sq = bool(enable_sq) if enable_sq is not None else False
+        self._enable_sq = enable_sq if enable_sq is not None else global_config['enable_sq']
         if self.enable_sq:
             self._sq = Quantizer(sq_conf or QuantizerConfig(place='datalane'), name=f'{self.name}_sq')
         self.standalone = standalone
