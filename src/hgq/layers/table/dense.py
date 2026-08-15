@@ -246,7 +246,7 @@ class QEinsumDenseT(QLayerBaseSingleInput):
 
     def build(self, input_shape):
         input_shape = tuple(input_shape)
-        kernel_shape, _, full_output_shape = _analyze_einsum_string(
+        kernel_shape, _, full_output_shape, *_io_axes = _analyze_einsum_string(
             self.equation,
             self.bias_axes,
             input_shape,

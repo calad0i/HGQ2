@@ -68,6 +68,7 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
             assert self.bq is not None
             self.bq.build(ops.shape(self.bias))
         self.ebops_equation = self.equation.split('->')[0] + '->'
+        self.full_output_shape = self.compute_output_shape(input_shape)
 
     def call(self, inputs, training=None):
         qkernel = self.kq(self._kernel, training=training)

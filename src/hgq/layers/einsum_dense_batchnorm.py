@@ -101,7 +101,7 @@ class QEinsumDenseBatchnorm(QEinsumDense):  # type: ignore
         equation = self.equation.replace('...', '0')
         kernel_axes, output_axes = equation.split(',')[1].split('->')
         shape_data = _analyze_einsum_string(equation, self.normalize_axes, input_shape, self.partial_output_shape)
-        kernel_shape, _norm_bias_cast_shape, output_shape = shape_data
+        _kernel_shape, _norm_bias_cast_shape, output_shape, *_io_axes = shape_data
         assert _norm_bias_cast_shape is not None
         if '0' in output_axes:
             _pad_len = len(output_shape) - len(output_axes) + 1
