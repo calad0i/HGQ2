@@ -288,7 +288,7 @@ class QGRUCell(QLayerBase, GRUCell):
             if not self.reset_after:
                 input_qbias, recurrent_qbias = self.qbias, None
             else:
-                input_qbias, recurrent_qbias = self.qbias
+                input_qbias, recurrent_qbias = self.qbias[0], self.qbias[1]
         else:
             input_qbias, recurrent_qbias = 0, 0
 
