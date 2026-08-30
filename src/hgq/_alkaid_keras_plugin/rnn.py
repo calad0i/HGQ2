@@ -1,6 +1,7 @@
 import numpy as np
 from alkaid.converter.builtin.keras.layers._base import ReplayOperationBase, to_np_arr
 from alkaid.converter.builtin.keras.layers.activation import keras_unary_to_numpy
+from alkaid.opsched.ops import affine_scan
 from alkaid.trace import FVArray
 
 from hgq.layers.rnn import QGRU, QGRUCell, QSimpleRNN, QSimpleRNNCell
@@ -12,40 +13,33 @@ class _QRNNReplay(ReplayOperationBase):
     handles = (QSimpleRNN, QGRU)
     __activation_handled__ = True
 
-    @staticmethod
-    def _zero_state(inputs: FVArray, units: int) -> FVArray:
-        return FVArray(np.zeros((inputs.shape[0], units), dtype=np.float32), inputs.solver_options, hwconf=inputs.hwconf)
-
-    @staticmethod
-    def _state(initial_state, inputs: FVArray, units: int) -> FVArray:
-        if initial_state is None:
-            return _QRNNReplay._zero_state(inputs, units)
-        if isinstance(initial_state, (tuple, list)):
-            assert len(initial_state) == 1, 'QSimpleRNN and QGRU have exactly one recurrent state.'
-            return initial_state[0]
-        return initial_state
-
     def _step(self, x: FVArray, state: FVArray):
         raise NotImplementedError
+
+    def _init(self, initial_state) -> np.ndarray:
+        op = self.op
+        if isinstance(initial_state, (tuple, list)):
+            assert len(initial_state) == 1, 'QSimpleRNN and QGRU have exactly one recurrent state.'
+            initial_state = initial_state[0]
+        if initial_state is None:
+            return np.zeros(op.cell.units)
+        assert not isinstance(initial_state, FVArray), (
+            f'{op.__class__.__name__} {op.name}: initial_state shall be a plain value array'
+        )
+        initial_state = to_np_arr(initial_state)
+        return initial_state.reshape(op.cell.units) if initial_state.size == op.cell.units else initial_state
 
     def call(self, inputs: FVArray, initial_state=None, mask=None):  # type: ignore
         op = self.op
         if mask is not None:
             raise NotImplementedError(f'{op.__class__.__name__} replay does not support masks.')
-        if inputs.ndim != 3:
-            raise ValueError(f'{op.__class__.__name__} replay expects rank-3 inputs, got shape {inputs.shape}.')
+        assert not op.stateful, f'{op.__class__.__name__} {op.name}: stateful=True is not supported by the alkaid conversion'
 
-        state = self._state(initial_state, inputs, op.cell.units)
-        outputs = []
-        steps = range(inputs.shape[1] - 1, -1, -1) if op.go_backwards else range(inputs.shape[1])
-        for t in steps:
-            output, state = self._step(inputs[:, t, :], state)
-            outputs.append(output)
-
-        final_output = np.stack(outputs, axis=1) if op.return_sequences else outputs[-1]  # type: ignore
-        if op.return_state:
-            return final_output, state
-        return final_output
+        if op.go_backwards:
+            inputs = inputs[..., ::-1, :]
+        scanned = affine_scan(self._step, inputs, self._init(initial_state), name=op.name)
+        final = scanned if op.return_sequences else scanned[..., -1, :]
+        return (final, scanned[..., -1, :]) if op.return_state else final
 
 
 class _QSimpleRNN(_QRNNReplay):
