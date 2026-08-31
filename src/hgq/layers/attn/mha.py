@@ -1,18 +1,20 @@
 import math
 from collections.abc import Sized
-from typing import Literal
+from typing import Literal, cast
 
 import keras
-from keras import ops
+from keras import KerasTensor, ops
 from keras.initializers import Constant
 from keras.layers import Dropout, MultiHeadAttention
 from keras.saving import register_keras_serializable
 from keras.src.layers.attention.multi_head_attention import _build_attention_equation, _build_proj_equation
 
+from ...quantizer import Quantizer
 from ...quantizer.config import QuantizerConfig
 from ...utils.misc import gather_vars_to_kwargs
 from ..core.base import QLayerBase
 from ..core.einsum_dense import QEinsumDense
+from ..fsoftmax import QFSoftmax
 from ..softmax import QSoftmax
 from ..table import QEinsumDenseT
 
@@ -47,11 +49,14 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         qkvo_kq_conf: QuantizerConfig | None = None,
         qkvo_bq_conf: QuantizerConfig | None = None,
         qkvo_oq_conf: QuantizerConfig | None = None,
+        softmax: Literal['plain', 'flash'] = 'plain',
         softmax_iq_conf: QuantizerConfig | None = None,
         softmax_exp_iq_conf: QuantizerConfig | None = None,
         softmax_exp_oq_conf: QuantizerConfig | None = None,
         softmax_inv_iq_conf: QuantizerConfig | None = None,
         softmax_inv_oq_conf: QuantizerConfig | None = None,
+        softmax_lq_conf: QuantizerConfig | None = None,
+        softmax_aq_conf: QuantizerConfig | None = None,
         softmax_oq_conf: QuantizerConfig | None = None,
         stable_softmax=True,
         softmax_allow_heterogeneous_table: bool = False,
@@ -69,10 +74,17 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         self._softmax_exp_oq_conf = softmax_exp_oq_conf or QuantizerConfig(place='table')
         self._softmax_inv_iq_conf = softmax_inv_iq_conf or QuantizerConfig(place='datalane')
         self._softmax_inv_oq_conf = softmax_inv_oq_conf or QuantizerConfig(place='table')
+        self._softmax_lq_conf = softmax_lq_conf or QuantizerConfig(place='datalane')
+        self._softmax_aq_conf = softmax_aq_conf or QuantizerConfig(place='datalane')
         self._softmax_oq_conf = softmax_oq_conf or QuantizerConfig(place='datalane')
         self._softmax_allow_heterogeneous_table = kwargs.pop('softmax_allow_heterogeneous_table')
         self.parallelization_factor = kwargs.pop('parallelization_factor')
         self._stable_softmax = kwargs.pop('stable_softmax')
+        self._softmax_kind = kwargs.pop('softmax').lower()
+        assert self._softmax_kind in ('plain', 'flash'), (
+            "softmax names the layer the scores are normalized by: 'plain' reads a whole row against its "
+            f"peak (QSoftmax) and 'flash' scans that row a key at a time (QFSoftmax), got {self._softmax_kind!r}."
+        )
         self._fuse = kwargs.pop('fuse', 'none').lower()
         self._inverse_sqrt_key_dim = 1.0 / math.sqrt(float(key_dim))
 
@@ -324,21 +336,45 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 attn_scores_rank,
             ),
         )
-        self._softmax = QSoftmax(
-            enable_oq=True,
-            axis=norm_axes,
-            dtype=self.dtype_policy,
-            stable=self._stable_softmax,
-            iq_conf=self._softmax_iq_conf,
-            exp_iq_conf=self._softmax_exp_iq_conf,
-            exp_oq_conf=self._softmax_exp_oq_conf,
-            inv_iq_conf=self._softmax_inv_iq_conf,
-            inv_oq_conf=self._softmax_inv_oq_conf,
-            oq_conf=self._softmax_oq_conf,
-            allow_heterogeneous_table=self._softmax_allow_heterogeneous_table,
-            input_scaler=self._inverse_sqrt_key_dim,
-            enable_ebops=self.enable_ebops,
-        )
+        if self._softmax_kind == 'flash':
+            assert attn_scores_rank == 4, (
+                'the online softmax scans the one key axis of a [batch, heads, query, key] score matrix. '
+                'Input shapes must be [B, T, D] in 3D.'
+            )
+            assert not self._dropout, 'dropout is not supported for online softmax'
+
+            self._softmax = QFSoftmax(
+                enable_oq=False,
+                axis=norm_axes[0],
+                dtype=self.dtype_policy,
+                iq_conf=self._softmax_iq_conf,
+                exp_iq_conf=self._softmax_exp_iq_conf,
+                exp_oq_conf=self._softmax_exp_oq_conf,
+                inv_iq_conf=self._softmax_inv_iq_conf,
+                inv_oq_conf=self._softmax_inv_oq_conf,
+                lq_conf=self._softmax_lq_conf,
+                aq_conf=self._softmax_aq_conf,
+                allow_heterogeneous_table=self._softmax_allow_heterogeneous_table,
+                input_scaler=self._inverse_sqrt_key_dim,
+                enable_ebops=False,
+            )
+            self._context_oq = Quantizer(self._softmax_oq_conf, name=f'{self.name}_context_oq')
+        else:
+            self._softmax = QSoftmax(
+                enable_oq=True,
+                axis=norm_axes,
+                dtype=self.dtype_policy,
+                stable=self._stable_softmax,
+                iq_conf=self._softmax_iq_conf,
+                exp_iq_conf=self._softmax_exp_iq_conf,
+                exp_oq_conf=self._softmax_exp_oq_conf,
+                inv_iq_conf=self._softmax_inv_iq_conf,
+                inv_oq_conf=self._softmax_inv_oq_conf,
+                oq_conf=self._softmax_oq_conf,
+                allow_heterogeneous_table=self._softmax_allow_heterogeneous_table,
+                input_scaler=self._inverse_sqrt_key_dim,
+                enable_ebops=self.enable_ebops,
+            )
         self._dropout_layer = Dropout(
             rate=self._dropout,
             dtype=self.dtype_policy,
@@ -351,6 +387,8 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             attn_score_shape = (None, self._num_heads, *q_shape[1:-1], *v_shape[1:-1])
             self._softmax.build(attn_score_shape)
             self._dropout_layer.build(attn_score_shape)
+            if self._softmax_kind == 'flash':
+                self._context_oq.build((*attn_score_shape[:-1], self._value_dim))
 
     def compute_output_shape(self, query_shape, value_shape, key_shape=None):
         return super().compute_output_shape(query_shape, query_shape, None)
@@ -363,11 +401,14 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 'qkvo_kq_conf': self._qkvo_kq_conf,
                 'qkvo_bq_conf': self._qkvo_bq_conf,
                 'qkvo_oq_conf': self._qkvo_oq_conf,
+                'softmax': self._softmax_kind,
                 'softmax_iq_conf': self._softmax_iq_conf,
                 'softmax_exp_iq_conf': self._softmax_exp_iq_conf,
                 'softmax_exp_oq_conf': self._softmax_exp_oq_conf,
                 'softmax_inv_iq_conf': self._softmax_inv_iq_conf,
                 'softmax_inv_oq_conf': self._softmax_inv_oq_conf,
+                'softmax_lq_conf': self._softmax_lq_conf,
+                'softmax_aq_conf': self._softmax_aq_conf,
                 'softmax_oq_conf': self._softmax_oq_conf,
                 'softmax_allow_heterogeneous_table': self._softmax_allow_heterogeneous_table,
                 'parallelization_factor': self.parallelization_factor,
@@ -406,6 +447,14 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         bw_q = self._query_dense.oq.bits_(Q_shape)
         bw_k = self._key_dense.oq.bits_(K_shape)
         bw_v = self._value_dense.oq.bits_(V_shape)
+
+        if self._softmax_kind == 'flash':
+            # The values are folded a round at a time, so the combine is a term of the rounds, not its own.
+            ebops = ops.einsum(self._dot_product_ebops_equation, bw_q, bw_k) + self._online_ebops(attn_score_shape)
+            if self.parallelization_factor > 0:
+                return ebops * self.parallelization_factor
+            return ebops
+
         bw_attn = self._softmax.oq.bits_(attn_score_shape)
 
         ebops_qk = ops.einsum(self._dot_product_ebops_equation, bw_q, bw_k)
@@ -414,6 +463,29 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         if self.parallelization_factor > 0:
             return ebops * self.parallelization_factor
         return ebops
+
+    def _online_ebops(self, attn_score_shape):
+        softmax: QFSoftmax = self._softmax
+        keys = attn_score_shape[-1]
+        state_shape = (*attn_score_shape[:-1], 1)
+        context_shape = (*attn_score_shape[:-1], self._value_dim)
+
+        exp_in_bits = softmax.exp_table.iq.bits_(state_shape)
+        exp_bits = softmax.exp_table.oq.bits_(state_shape)
+        l_bits = softmax.lq.bits_(state_shape)
+        acc_bits = softmax.aq.bits_(context_shape)
+        inv_in_bits = softmax.inv_table.iq.bits_(state_shape)
+        inv_bits = softmax.inv_table.oq.bits_(state_shape)
+
+        round_ebops = (
+            2 * ops.sum((2.0**exp_in_bits) * exp_bits) * 1e-4  # type: ignore
+            + ops.sum(exp_bits * l_bits)  # type: ignore
+            + ops.sum(l_bits)
+            + 2 * ops.sum(exp_bits * acc_bits)  # type: ignore
+        )
+        final_ebops = ops.sum((2.0**inv_in_bits) * inv_bits) * 1e-4 + ops.sum(acc_bits * inv_bits)  # type: ignore
+
+        return 3 * ops.sum(softmax.exp_table.iq.bits_(attn_score_shape)) + keys * round_ebops + final_ebops  # type: ignore
 
     @property
     def ebops(self):
@@ -482,6 +554,34 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             return attention_output, attention_scores
         return attention_output
 
+    def _online_attention(self, query, key, value, attention_mask=None, training=None):
+        """One pass along the key axis carrying ``(m, l, O)``: the running maximum, the denominator, and
+        the value-weighted numerator, every product landed inside the fold."""
+
+        assert attention_mask is None, (
+            f'{self.name} is configured to use online softmax (flash attention); attention_mask is not supported yet'
+        )
+        softmax: QFSoftmax = self._softmax
+
+        # [B, N, T, S]; the 1/sqrt(key_dim) the scores are read at rides in the exponential's own table.
+        scores = cast(KerasTensor, ops.einsum(self._dot_product_equation, key, query))
+        m = cast(KerasTensor, ops.take(scores, [0], axis=-1))  # the first score, so every round below is identical
+        weight = ops.zeros_like(m)
+        context = ops.zeros_like(m)
+
+        for i in range(scores.shape[-1]):
+            score = ops.take(scores, [i], axis=-1)
+            m, previous = cast(KerasTensor, ops.maximum(m, score)), m
+            rescale = softmax.exp_table(m - previous, training=training)  # EXP[m_prev - m], 1 on a quiet round
+            share = softmax.exp_table(m - score, training=training)
+            weight = softmax.lq(rescale * weight, training=training) + share
+            served = ops.expand_dims(ops.take(value, i, axis=1), axis=-2)  # [B, N, 1, H]
+            context = softmax.aq(rescale * context, training=training) + softmax.aq(share * served, training=training)
+
+        context = self._context_oq(context * softmax.inv_table(weight, training=training), training=training)
+        # [B, N, T, H] is the scan's own layout; the output projection is [B, T, N, H].
+        return ops.transpose(context, (0, 2, 1, 3)), None
+
     def _compute_attention(self, query, key, value, attention_mask=None, training=None):  # type: ignore
         # Original _compute_attention in keras 3.5.0
         # Copied for disable to flash-attn that breaks quantization.
@@ -514,6 +614,9 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         attention_scores : tensor
             Multi-headed attention weights.
         """
+        if self._softmax_kind == 'flash':
+            return self._online_attention(query, key, value, attention_mask, training)
+
         # Note: Applying scalar multiply at the smaller end of einsum improves
         # XLA performance, but may introduce slight numeric differences in
         # the Transformer attention head.

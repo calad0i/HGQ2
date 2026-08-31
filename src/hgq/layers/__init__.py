@@ -5,6 +5,7 @@ from .batch_normalization import QBatchNormalization
 from .conv import QConv1D, QConv2D, QConv3D
 from .core import *
 from .einsum_dense_batchnorm import QEinsumDenseBatchnorm
+from .fsoftmax import QFSoftmax
 from .ops import *
 from .pooling import *
 from .pooling import (
@@ -57,6 +58,7 @@ __all__ = [
     'QConv3D',
     'QEinsumDenseBatchnorm',
     'QSoftmax',
+    'QFSoftmax',
     'Quantizer',
     'QAdd',
     'QDot',

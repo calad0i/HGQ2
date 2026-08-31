@@ -3,9 +3,9 @@ import numpy as np
 from alkaid.converter.builtin.keras.layers._base import ReplayOperationBase
 from alkaid.trace import FVArray
 
-from hgq.layers import QAffinedUnaryFunctionLUT, QSoftmax, QUnaryFunctionLUT
+from hgq.layers import QAffinedUnaryFunctionLUT, QFSoftmax, QSoftmax, QUnaryFunctionLUT
 
-from ._base import QLayerMixin
+from ._base import QLayerMixin, mirror_quantizer
 
 
 class _QFunctionLUT(QLayerMixin, ReplayOperationBase):
@@ -29,11 +29,7 @@ class _QSoftmax(QLayerMixin, ReplayOperationBase):
     handles = (QSoftmax,)
 
     def call(self, inputs: FVArray, mask: FVArray | None = None) -> FVArray:
-        # Alkaid passes inputs with the batch dim preserved as size-1, unlike
-        # da4ml which strips it. ``op.axes`` is expressed relative to the
-        # full (batched) shape, so we apply it directly without prepending
-        # an extra dim.
-        op: QSoftmax = self.op
+        op: QSoftmax = self.op  # type: ignore
 
         if op.stable:
             if mask is not None:
@@ -50,3 +46,30 @@ class _QSoftmax(QLayerMixin, ReplayOperationBase):
         divisor = _QFunctionLUT(op.inv_table)(sums)['final'][0]
 
         return exp_inp * divisor
+
+
+class _QFSoftmax(QLayerMixin, ReplayOperationBase):
+    """The online softmax written round by round for FA1"""
+
+    __activation_handled__ = True
+    handles = (QFSoftmax,)
+
+    def call(self, inputs: FVArray) -> FVArray:
+        op: QFSoftmax = self.op  # type: ignore
+        exponential = _QFunctionLUT(op.exp_table)
+        lane = lambda i: inputs[(slice(None),) * op.axis + (slice(i, i + 1),)]
+
+        m = lane(0)
+        weight = np.zeros(m.shape)
+        numerator = np.zeros(inputs.shape)
+        for i, slot in enumerate(op._slots):
+            score = lane(i)
+            m, previous = np.maximum(m, score), m  # type: ignore
+            rescale = exponential(m - previous)['final'][0]
+            share = exponential(m - score)['final'][0]
+            weight = mirror_quantizer(op.lq, rescale * weight) + share
+            numerator = np.where(  # type: ignore
+                slot, mirror_quantizer(op.aq, share), mirror_quantizer(op.aq, rescale * numerator)
+            )
+
+        return numerator * _QFunctionLUT(op.inv_table)(weight)['final'][0]  # type: ignore
