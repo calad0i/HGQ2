@@ -1,6 +1,7 @@
 import keras
 import numpy as np
 from alkaid.converter.builtin.keras.layers._base import ReplayOperationBase
+from alkaid.opsched.frontend import affine_scan, configure, scope, set_token_dim
 from alkaid.trace import FVArray
 
 from hgq.layers import QAffinedUnaryFunctionLUT, QFSoftmax, QSoftmax, QUnaryFunctionLUT
@@ -49,27 +50,26 @@ class _QSoftmax(QLayerMixin, ReplayOperationBase):
 
 
 class _QFSoftmax(QLayerMixin, ReplayOperationBase):
-    """The online softmax written round by round for FA1"""
-
     __activation_handled__ = True
     handles = (QFSoftmax,)
 
     def call(self, inputs: FVArray) -> FVArray:
         op: QFSoftmax = self.op  # type: ignore
+        order = tuple(axis for axis in range(inputs.ndim) if axis != op.axis) + (op.axis,)
+        with scope(inputs, 'arrival'):
+            sequence = set_token_dim(np.transpose(inputs, order)[..., None], -1)
         exponential = _QFunctionLUT(op.exp_table)
-        lane = lambda i: inputs[(slice(None),) * op.axis + (slice(i, i + 1),)]
 
-        m = lane(0)
-        weight = np.zeros(m.shape)
-        numerator = np.zeros(inputs.shape)
-        for i, slot in enumerate(op._slots):
-            score = lane(i)
-            m, previous = np.maximum(m, score), m  # type: ignore
-            rescale = exponential(m - previous)['final'][0]
-            share = exponential(m - score)['final'][0]
-            weight = mirror_quantizer(op.lq, rescale * weight) + share
-            numerator = np.where(  # type: ignore
-                slot, mirror_quantizer(op.aq, share), mirror_quantizer(op.aq, rescale * numerator)
-            )
+        def cell(token, state):
+            peak = np.where(state[-1:], np.maximum(state[:1], token), token)
+            rescale = exponential(peak - state[:1])['final'][0]
+            share = exponential(peak - token)['final'][0]
+            weight = mirror_quantizer(op.lq, rescale * state[1:2]) + share
+            held = mirror_quantizer(op.aq, rescale * state[3:-1])
+            return np.concatenate([peak, weight, held, mirror_quantizer(op.aq, share), np.ones(1)])
 
-        return numerator * _QFunctionLUT(op.inv_table)(weight)['final'][0]  # type: ignore
+        carried = affine_scan(cell, sequence, np.zeros(inputs.shape[op.axis] + 3), name=op.name)
+        configure(carried, parallel_firings=op.parallelization_factor)
+        final = carried[..., -1, :]
+        normalized = final[..., 2:-1] * _QFunctionLUT(op.inv_table)(final[..., 1:2])['final'][0]
+        return np.transpose(normalized, np.argsort(order))
