@@ -17,11 +17,11 @@ def mirror_quantizer(q: Quantizer, v: FVArray) -> FVArray:
         v = v * (1.0 / q.scaler)
     qi: FixedPointQuantizerBase = q.quantizer
     kk, ki, kf = qi.kif
-    shape = (1,) + v.shape
+    shape = (1,) * max(1, len(kk.shape) - v.ndim) + tuple(v.shape)
     kk = qi.bw_mapper.bw_to_x(kk, shape)
     ki = qi.bw_mapper.bw_to_x(ki, shape)
     kf = qi.bw_mapper.bw_to_x(kf, shape)
-    k, i, f = (to_np_arr(x).astype(np.int8)[0] for x in (kk, ki, kf))
+    k, i, f = (to_np_arr(x).astype(np.int8).reshape(v.shape) for x in (kk, ki, kf))
     rq = quantize(v, k, i, f, overflow_mode=qi.overflow_mode, round_mode=qi.round_mode)
     if q.affine:
         rq = rq * q.affine[0] + q.affine[1]
