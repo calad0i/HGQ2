@@ -1,5 +1,6 @@
 import math
 from collections.abc import Sized
+from copy import copy
 from typing import Literal, cast
 
 import keras
@@ -14,7 +15,7 @@ from ...quantizer.config import QuantizerConfig
 from ...utils.misc import gather_vars_to_kwargs
 from ..core.base import QLayerBase
 from ..core.einsum_dense import QEinsumDense
-from ..fsoftmax import QFSoftmax
+from ..fsoftmax import QFSoftmax, scan_rounds
 from ..softmax import QSoftmax
 from ..table import QEinsumDenseT
 
@@ -60,7 +61,8 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         softmax_oq_conf: QuantizerConfig | None = None,
         stable_softmax=True,
         softmax_allow_heterogeneous_table: bool = False,
-        parallelization_factor=-1,
+        parallelization_factor: int = -1,
+        target_ii: int | None = None,
         **kwargs,
     ):
         kwargs = gather_vars_to_kwargs('self|.+q_conf')
@@ -79,8 +81,21 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         self._softmax_oq_conf = softmax_oq_conf or QuantizerConfig(place='datalane')
         self._softmax_allow_heterogeneous_table = kwargs.pop('softmax_allow_heterogeneous_table')
         self.parallelization_factor = kwargs.pop('parallelization_factor')
+        self._target_ii: int | None = kwargs.pop('target_ii')
+        if self.target_ii is not None and self.target_ii < 1:
+            raise ValueError('target_ii must be positive.')
         self._stable_softmax = kwargs.pop('stable_softmax')
         self._softmax_kind = kwargs.pop('softmax').lower()
+        self._qkv_oq_conf: QuantizerConfig = self._qkvo_oq_conf
+        if self._softmax_kind == 'flash':
+            self._qkv_oq_conf = copy(self._qkvo_oq_conf)
+            self._qkv_oq_conf.config = self._qkv_oq_conf.config.copy()
+            self._qkv_oq_conf.config.update(homogeneous_axis=None, bw_mapper=None)
+            self._qkv_oq_conf.config['heterogeneous_axis'] = tuple(
+                a for a in self._qkv_oq_conf.config.get('heterogeneous_axis') or () if a in (2, 3, -2, -1)
+            )
+        if self.target_ii is not None and self._softmax_kind != 'flash':
+            raise ValueError("target_ii prices the flash softmax; set softmax='flash' or omit target_ii.")
         assert self._softmax_kind in ('plain', 'flash'), (
             "softmax names the layer the scores are normalized by: 'plain' reads a whole row against its "
             f"peak (QSoftmax) and 'flash' scans that row a key at a time (QFSoftmax), got {self._softmax_kind!r}."
@@ -89,6 +104,10 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         self._inverse_sqrt_key_dim = 1.0 / math.sqrt(float(key_dim))
 
         super().__init__(**kwargs)
+
+    @property
+    def target_ii(self) -> int | None:
+        return self._target_ii
 
     def _get_common_kwargs_for_sublayer(self):
         common_kwargs: dict = super()._get_common_kwargs_for_sublayer()
@@ -172,7 +191,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             name='query',
             enable_iq=self.enable_iq and not self._fuse == 'qkv',
             enable_oq=True,
-            **self._get_common_kwargs_for_sublayer(),
+            **{**self._get_common_kwargs_for_sublayer(), 'oq_conf': self._qkv_oq_conf},
         )
 
         einsum_equation, bias_axes, output_rank = _build_proj_equation(
@@ -191,7 +210,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             name='key',
             enable_iq=self.enable_iq and self._fuse not in ('qkv', 'kv'),
             enable_oq=True,
-            **self._get_common_kwargs_for_sublayer(),
+            **{**self._get_common_kwargs_for_sublayer(), 'oq_conf': self._qkv_oq_conf},
         )
 
         einsum_equation, bias_axes, output_rank = _build_proj_equation(
@@ -210,7 +229,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             name='value',
             enable_iq=self.enable_iq,
             enable_oq=True,
-            **self._get_common_kwargs_for_sublayer(),
+            **{**self._get_common_kwargs_for_sublayer(), 'oq_conf': self._qkv_oq_conf},
         )
         self._value_dense.build(value_shape)
 
@@ -259,6 +278,27 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
 
         self._dot_product_ebops_equation = self._dot_product_equation.split('->', 1)[0] + '->'
         self._combine_ebops_equation = self._combine_equation.split('->', 1)[0] + '->'
+
+        self.n_parallel = math.prod(query_shape[1:-1])
+        if self.parallelization_factor < 0:
+            if self.target_ii is None:
+                self.parallelization_factor = self.n_parallel
+            else:
+                # temporary alkaid matched impl, used iff pf<0
+                denses = (self._query_dense, self._key_dense, self._value_dense, self._output_dense)
+                terms = (query_shape[-1], key_shape[-1], value_shape[-1], self._value_dim)
+                for dense, contraction in zip(denses, terms):
+                    budget = min(contraction, max(1, self.target_ii // dense.n_parallel))
+                    if dense.n_parallel == 1:
+                        budget = 1
+                    unroll = math.ceil(contraction / budget)
+                    steps = math.ceil(contraction / unroll)
+                    if steps < 8:  # ak heuristic for serial vs DA impl, temp
+                        steps, unroll = 1, contraction
+                    dense.parallelization_factor = math.ceil(dense.n_parallel / (self.target_ii // steps))
+                    # fraction of the contraction a serial step in parallel
+                    dense.ebops_factor = unroll / contraction
+                self._softmax.parallelization_factor = math.ceil(self.n_parallel * value_shape[1] / self.target_ii)
         self.built = True
 
     def _make_output_dense(self, query_shape, common_kwargs, name=None):
@@ -307,7 +347,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             **common_kwargs,
         )
 
-    def _build_attention(self, rank, shapes=None):
+    def _build_attention(self, rank, shapes):  # type: ignore[reportIncompatibleMethodOverride]
         """Builds multi-head dot-product attention computations.
 
         This function builds attributes necessary for `_compute_attention` to
@@ -336,6 +376,8 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 attn_scores_rank,
             ),
         )
+        q_shape, v_shape, _ = shapes
+        attn_score_shape = (None, self._num_heads, *q_shape[1:-1], *v_shape[1:-1])
         if self._softmax_kind == 'flash':
             assert attn_scores_rank == 4, (
                 'the online softmax scans the one key axis of a [batch, heads, query, key] score matrix. '
@@ -343,6 +385,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             )
             assert not self._dropout, 'dropout is not supported for online softmax'
 
+            context_shape = tuple(s for i, s in enumerate(attn_score_shape) if i != norm_axes[0]) + (self._value_dim,)
             self._softmax = QFSoftmax(
                 enable_oq=False,
                 axis=norm_axes[0],
@@ -354,11 +397,13 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 inv_oq_conf=self._softmax_inv_oq_conf,
                 lq_conf=self._softmax_lq_conf,
                 aq_conf=self._softmax_aq_conf,
+                accumulator_shape=context_shape,
                 allow_heterogeneous_table=self._softmax_allow_heterogeneous_table,
                 input_scaler=self._inverse_sqrt_key_dim,
                 enable_ebops=False,
             )
             self._context_oq = Quantizer(self._softmax_oq_conf, name=f'{self.name}_context_oq')
+            self._context_oq.build(context_shape)
         else:
             self._softmax = QSoftmax(
                 enable_oq=True,
@@ -381,14 +426,8 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             seed=self.seed,
         )
         self._inverse_sqrt_key_dim = 1.0
-        # Build softmax and dropout layers if possible.
-        if shapes is not None:
-            q_shape, v_shape, _ = shapes
-            attn_score_shape = (None, self._num_heads, *q_shape[1:-1], *v_shape[1:-1])
-            self._softmax.build(attn_score_shape)
-            self._dropout_layer.build(attn_score_shape)
-            if self._softmax_kind == 'flash':
-                self._context_oq.build((*attn_score_shape[:-1], self._value_dim))
+        self._softmax.build(attn_score_shape)
+        self._dropout_layer.build(attn_score_shape)
 
     def compute_output_shape(self, query_shape, value_shape, key_shape=None):
         return super().compute_output_shape(query_shape, query_shape, None)
@@ -412,6 +451,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 'softmax_oq_conf': self._softmax_oq_conf,
                 'softmax_allow_heterogeneous_table': self._softmax_allow_heterogeneous_table,
                 'parallelization_factor': self.parallelization_factor,
+                'target_ii': self.target_ii,
                 'stable_softmax': self._stable_softmax,
                 'fuse': self._fuse,
             }
@@ -432,60 +472,49 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         value_shape = query_shape if value_shape is None else value_shape
         attn_score_shape = (1, self._num_heads, *query_shape[1:-1], *value_shape[1:-1])
 
-        # PF not supported for MHA for now.
-        # if self.parallelization_factor > 0:
-        #     assert len(query_shape) == 3, f'EBOPs computation with pf>0 is only supported for 3D tensors, but got {query_shape}.'
-        #     b, *n, h, dk = Q_shape
-        #     b, *n, h, dv = K_shape
-        #     b, *n, h, dv = V_shape
-
-        #     Q_shape = b, (1,) * len(n), h, dk
-        #     K_shape = b, (1,) * len(n), h, dv
-        #     V_shape = b, (1,) * len(n), h, dv
-        #     attn_score_shape = b, self._num_heads, *(1,) * len(n) * 2
+        factor = self.parallelization_factor / self.n_parallel
 
         bw_q = self._query_dense.oq.bits_(Q_shape)
         bw_k = self._key_dense.oq.bits_(K_shape)
         bw_v = self._value_dense.oq.bits_(V_shape)
 
+        ebops_qk = ops.einsum(self._dot_product_ebops_equation, bw_q, bw_k)
         if self._softmax_kind == 'flash':
-            # The values are folded a round at a time, so the combine is a term of the rounds, not its own.
-            ebops = ops.einsum(self._dot_product_ebops_equation, bw_q, bw_k) + self._online_ebops(attn_score_shape)
-            if self.parallelization_factor > 0:
-                return ebops * self.parallelization_factor
-            return ebops
+            softmax: QFSoftmax = self._softmax
+            keys = attn_score_shape[-1]
+            state_shape = (*attn_score_shape[:-1], 1)
+            context_shape = (*attn_score_shape[:-1], self._value_dim)
+
+            exp_in_bits = softmax.exp_table.iq.bits_(state_shape)
+            exp_bits = softmax.exp_table.oq.bits_(state_shape)
+            l_bits = softmax.lq.bits_(state_shape)
+            acc_bits = softmax.aq.bits_(context_shape)
+            inv_in_bits = softmax.inv_table.iq.bits_(state_shape)
+            inv_bits = softmax.inv_table.oq.bits_(state_shape)
+
+            comparisons = 3 * ops.sum(softmax.exp_table.iq.bits_(attn_score_shape))  # type: ignore
+            round_ebops = (
+                2 * ops.sum((2.0**exp_in_bits) * exp_bits) * 1e-4  # type: ignore
+                + ops.sum(exp_bits * l_bits)  # type: ignore
+                + ops.sum(l_bits)
+                + 2 * ops.sum(exp_bits * acc_bits)  # type: ignore
+            )
+            final_ebops = ops.sum((2.0**inv_in_bits) * inv_bits) * 1e-4 + ops.sum(acc_bits * inv_bits)  # type: ignore
+
+            if self.parallelization_factor < 0 and self.target_ii is not None:
+                cells = softmax.parallelization_factor
+                rows = self.n_parallel
+                return (
+                    ebops_qk * cells / (rows * keys)  # type: ignore
+                    + (comparisons / keys + round_ebops) * cells / rows
+                    + final_ebops * math.ceil(rows / self.target_ii) / rows
+                )
+            return (ebops_qk + (comparisons + keys * round_ebops + final_ebops)) * factor
 
         bw_attn = self._softmax.oq.bits_(attn_score_shape)
 
-        ebops_qk = ops.einsum(self._dot_product_ebops_equation, bw_q, bw_k)
         ebops_av = ops.einsum(self._combine_ebops_equation, bw_attn, bw_v)
-        ebops = ebops_qk + ebops_av  # type: ignore
-        if self.parallelization_factor > 0:
-            return ebops * self.parallelization_factor
-        return ebops
-
-    def _online_ebops(self, attn_score_shape):
-        softmax: QFSoftmax = self._softmax
-        keys = attn_score_shape[-1]
-        state_shape = (*attn_score_shape[:-1], 1)
-        context_shape = (*attn_score_shape[:-1], self._value_dim)
-
-        exp_in_bits = softmax.exp_table.iq.bits_(state_shape)
-        exp_bits = softmax.exp_table.oq.bits_(state_shape)
-        l_bits = softmax.lq.bits_(state_shape)
-        acc_bits = softmax.aq.bits_(context_shape)
-        inv_in_bits = softmax.inv_table.iq.bits_(state_shape)
-        inv_bits = softmax.inv_table.oq.bits_(state_shape)
-
-        round_ebops = (
-            2 * ops.sum((2.0**exp_in_bits) * exp_bits) * 1e-4  # type: ignore
-            + ops.sum(exp_bits * l_bits)  # type: ignore
-            + ops.sum(l_bits)
-            + 2 * ops.sum(exp_bits * acc_bits)  # type: ignore
-        )
-        final_ebops = ops.sum((2.0**inv_in_bits) * inv_bits) * 1e-4 + ops.sum(acc_bits * inv_bits)  # type: ignore
-
-        return 3 * ops.sum(softmax.exp_table.iq.bits_(attn_score_shape)) + keys * round_ebops + final_ebops  # type: ignore
+        return (ebops_qk + ebops_av) * factor  # type: ignore
 
     @property
     def ebops(self):
@@ -566,17 +595,25 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         # [B, N, T, S]; the 1/sqrt(key_dim) the scores are read at rides in the exponential's own table.
         scores = cast(KerasTensor, ops.einsum(self._dot_product_equation, key, query))
         m = cast(KerasTensor, ops.take(scores, [0], axis=-1))  # the first score, so every round below is identical
-        weight = ops.zeros_like(m)
-        context = ops.zeros_like(m)
 
-        for i in range(scores.shape[-1]):
-            score = ops.take(scores, [i], axis=-1)
+        def round_(carry, xs):
+            m, weight, context = carry
+            score, served = xs
+            score = ops.expand_dims(score, axis=-1)  # [B, N, T, 1]
+            served = ops.expand_dims(served, axis=-2)  # [B, N, 1, H]
             m, previous = cast(KerasTensor, ops.maximum(m, score)), m
             rescale = softmax.exp_table(m - previous, training=training)  # EXP[m_prev - m], 1 on a quiet round
             share = softmax.exp_table(m - score, training=training)
             weight = softmax.lq(rescale * weight, training=training) + share
-            served = ops.expand_dims(ops.take(value, i, axis=1), axis=-2)  # [B, N, 1, H]
             context = softmax.aq(rescale * context, training=training) + softmax.aq(share * served, training=training)
+            return m, weight, context
+
+        context = ops.zeros((*ops.shape(m)[:-1], self._value_dim))  # type: ignore
+        init = (m, ops.zeros_like(m), context)
+        xs = (ops.moveaxis(scores, -1, 0), ops.moveaxis(value, 1, 0))
+        _, weight, context = scan_rounds(
+            round_, init, xs, [*softmax.exp_table.variables, *softmax.lq.variables, *softmax.aq.variables]
+        )
 
         context = self._context_oq(context * softmax.inv_table(weight, training=training), training=training)
         # [B, N, T, H] is the scan's own layout; the output projection is [B, T, N, H].
@@ -737,7 +774,7 @@ class QMultiHeadAttentionT(QMultiHeadAttention):
             enable_iq=enable_iq,
             iq_conf=self._qkvo_iq_conf,
             enable_oq=enable_oq,
-            oq_conf=self._qkvo_oq_conf,
+            oq_conf=self._qkv_oq_conf if name in ('query', 'key', 'value') else self._qkvo_oq_conf,
             enable_ebops=self.enable_ebops,
             beta0=self._beta0.clone(),
         )
@@ -808,6 +845,10 @@ class QMultiHeadAttentionT(QMultiHeadAttention):
 
         self._dot_product_ebops_equation = self._dot_product_equation.split('->', 1)[0] + '->'
         self._combine_ebops_equation = self._combine_equation.split('->', 1)[0] + '->'
+
+        self.n_parallel = math.prod(query_shape[1:-1])
+        if self.parallelization_factor < 0:
+            self.parallelization_factor = self.n_parallel
         self.built = True
 
     def _make_output_dense(self, query_shape, common_kwargs, name=None):
