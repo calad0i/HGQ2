@@ -320,7 +320,7 @@ class QRNN(RNN, metaclass=QLayerMeta):
 
     def build(self, sequences_shape, initial_state_shape=None):
         seq_len = sequences_shape[1]
-        if self.parallelization_factor == -1:
+        if self.parallelization_factor < 0:
             self.parallelization_factor = seq_len
 
         if self.enable_ebops:
