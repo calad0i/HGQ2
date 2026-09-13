@@ -109,6 +109,11 @@ class QSoftmax(QLayerBaseSingleInput):
             inv_shape[i] = 1
         self.inv_table.build(tuple(inv_shape))
 
+        assert None not in inv_shape[1:], f'QSoftmax needs known lengths on the axes it keeps, got {input_shape}.'
+        self.n_parallel = prod(inv_shape[1:])
+        if self.parallelization_factor < 0:
+            self.parallelization_factor = self.n_parallel
+
         super().build(input_shape)
 
     def call(self, inputs, training=None, mask=None):  # type: ignore
@@ -133,9 +138,7 @@ class QSoftmax(QLayerBaseSingleInput):
 
     def _compute_ebops(self, shape):
         accum_shape = tuple(1 if i in self.axes else s for i, s in enumerate(shape))
-        max_instance = prod(accum_shape)
-        n_instance = self.parallelization_factor if self.parallelization_factor > 0 else max_instance
-        factor = n_instance / max_instance
+        factor = self.parallelization_factor / self.n_parallel
 
         inp_bits = self.iq.bits_(shape) if self.enable_iq else 0
         exp_bits = self.exp_table.oq.bits_(shape)
