@@ -1,7 +1,7 @@
 import numpy as np
 from alkaid.converter.builtin.keras.layers._base import ReplayOperationBase, to_np_arr
 from alkaid.converter.builtin.keras.layers.activation import keras_unary_to_numpy
-from alkaid.opsched.ops import affine_scan
+from alkaid.opsched.frontend import affine_scan
 from alkaid.trace import FVArray
 
 from hgq.layers.rnn import QGRU, QGRUCell, QSimpleRNN, QSimpleRNNCell
@@ -88,7 +88,7 @@ class _QGRU(_QRNNReplay):
             input_bias, recurrent_bias = 0, 0
 
         matrix_x = qx @ to_np_arr(cell.qkernel) + input_bias
-        x_zr, x_h = matrix_x[:, : 2 * units], matrix_x[:, 2 * units :]
+        x_zr, x_h = matrix_x[..., : 2 * units], matrix_x[..., 2 * units :]
         recurrent_kernel = to_np_arr(cell.qrecurrent_kernel)
 
         if cell.reset_after:
@@ -96,11 +96,11 @@ class _QGRU(_QRNNReplay):
         else:
             matrix_inner = qstate @ recurrent_kernel[:, : 2 * units]
 
-        zr = mirror_quantizer(cell.praq, self.recurrent_activation(x_zr + matrix_inner[:, : 2 * units]))
+        zr = mirror_quantizer(cell.praq, self.recurrent_activation(x_zr + matrix_inner[..., : 2 * units]))
         z, r = np.split(zr, 2, axis=-1)  # type: ignore
 
         if cell.reset_after:
-            recurrent_h = r * mirror_quantizer(cell.rhq, matrix_inner[:, 2 * units :])
+            recurrent_h = r * mirror_quantizer(cell.rhq, matrix_inner[..., 2 * units :])
         else:
             recurrent_h = mirror_quantizer(cell.rhq, r * qstate) @ recurrent_kernel[:, 2 * units :]  # type: ignore
 
