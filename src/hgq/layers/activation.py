@@ -1,11 +1,17 @@
 from collections.abc import Callable
 
-from keras import ops
+from keras import KerasTensor, ops
 from keras.layers import Activation
 from keras.src import backend
 
 from ..quantizer import QuantizerConfig
 from .core.base import QLayerBaseSingleInput
+
+
+def table_ebops(in_bits: KerasTensor, out_bits: KerasTensor) -> KerasTensor:
+    extra = in_bits - 6  # LUT6
+    small = out_bits * 2.0 ** ops.maximum(extra, 0)  # type: ignore
+    return ops.sum(ops.where(extra > 6, 0.5 * 2.0**extra, small))  # type: ignore
 
 
 def _large_negative_number(dtype):
@@ -63,8 +69,7 @@ class QUnaryFunctionLUT(Activation, QLayerBaseSingleInput):
     def _compute_ebops(self, shape):
         bw_inp = self.iq.bits_(shape)
         bw_out = self.oq.bits_(shape)
-        # TODO: more realistic cost for lookup tables
-        return ops.sum((2.0**bw_inp) * bw_out) * 1e-4  # type: ignore
+        return table_ebops(bw_inp, bw_out)  # type: ignore
 
     def get_config(self):
         config = super().get_config()

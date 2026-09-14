@@ -6,7 +6,7 @@ from keras.src import backend
 
 from ..config.layer import global_config
 from ..quantizer import QuantizerConfig
-from .activation import QUnaryFunctionLUT
+from .activation import QUnaryFunctionLUT, table_ebops
 from .core import QLayerBaseSingleInput
 
 
@@ -123,7 +123,7 @@ class QSoftmax(QLayerBaseSingleInput):
         if self.stable:
             if mask is not None:
                 mask = ops.cast(mask, ops.dtype(inputs))
-                inputs = mask * inputs - (1 - mask) * 1e9
+                inputs = mask * inputs - (1 - mask) * 1e9  # type: ignore
             inputs = ops.max(inputs, axis=self.axes, keepdims=True) - inputs
 
         exp_inp = self.exp_table(inputs, training=training)
@@ -159,7 +159,7 @@ class QSoftmax(QLayerBaseSingleInput):
 
         if not self.stable:
             # iq is disabled for exp table, compute here
-            ebops += ops.sum((2.0**inp_bits) * exp_bits) * 1e-4  # type: ignore
+            ebops += table_ebops(inp_bits, exp_bits)  # type: ignore
 
         return ebops * factor
 
