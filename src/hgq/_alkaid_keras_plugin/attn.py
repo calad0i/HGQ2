@@ -179,8 +179,7 @@ class _QMHA(ReplayOperationBase):
                 weight = carried[..., -1, h * carrying + 1 : h * carrying + 2]
                 output = carried[..., -1, h * carrying + 2 : (h + 1) * carrying]
                 output = output * self._table(softmax.inv_table, weight, h)
-            landed = self._at_head(op._context_oq, output, h)
-            contexts.append(cut(landed, f'{op.name}_context{h}'))
+            contexts.append(cut(output, f'{op.name}_context{h}'))
         return contexts, None
 
     def _project(self, op: QMultiHeadAttention, contexts):

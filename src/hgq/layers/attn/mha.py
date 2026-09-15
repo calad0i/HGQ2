@@ -10,7 +10,6 @@ from keras.layers import Dropout, MultiHeadAttention
 from keras.saving import register_keras_serializable
 from keras.src.layers.attention.multi_head_attention import _build_attention_equation, _build_proj_equation
 
-from ...quantizer import Quantizer
 from ...quantizer.config import QuantizerConfig
 from ...utils.misc import gather_vars_to_kwargs
 from ..activation import table_ebops
@@ -401,8 +400,6 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 input_scaler=self._inverse_sqrt_key_dim,
                 enable_ebops=False,
             )
-            self._context_oq = Quantizer(self._softmax_oq_conf, name=f'{self.name}_context_oq')
-            self._context_oq.build(context_shape)
         else:
             self._softmax = QSoftmax(
                 enable_oq=True,
@@ -649,7 +646,6 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             context = scan_rounds(
                 accumulate, context, xs, [*softmax.exp_table.variables, *softmax.inv_table.variables, *softmax.aq.variables]
             )
-            context = self._context_oq(context, training=training)
             return ops.transpose(context, (0, 2, 1, 3)), None
 
         init = (m, ops.zeros_like(m), context)
@@ -657,7 +653,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             round_, init, xs, [*softmax.exp_table.variables, *softmax.lq.variables, *softmax.aq.variables]
         )
 
-        context = self._context_oq(context * softmax.inv_table(weight, training=training), training=training)
+        context = context * softmax.inv_table(weight, training=training)
         # [B, N, T, H] is the scan's own layout; the output projection is [B, T, N, H].
         return ops.transpose(context, (0, 2, 1, 3)), None
 
