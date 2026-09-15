@@ -13,6 +13,7 @@ from keras.src.layers.attention.multi_head_attention import _build_attention_equ
 from ...quantizer import Quantizer
 from ...quantizer.config import QuantizerConfig
 from ...utils.misc import gather_vars_to_kwargs
+from ..activation import table_ebops
 from ..core.base import QLayerBase
 from ..core.einsum_dense import QEinsumDense
 from ..fsoftmax import QFSoftmax, scan_rounds
@@ -50,7 +51,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         qkvo_kq_conf: QuantizerConfig | None = None,
         qkvo_bq_conf: QuantizerConfig | None = None,
         qkvo_oq_conf: QuantizerConfig | None = None,
-        softmax: Literal['plain', 'flash'] = 'plain',
+        softmax: Literal['comb', '1pass', '2pass'] = 'comb',
         softmax_iq_conf: QuantizerConfig | None = None,
         softmax_exp_iq_conf: QuantizerConfig | None = None,
         softmax_exp_oq_conf: QuantizerConfig | None = None,
@@ -85,21 +86,18 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         if self.target_ii is not None and self.target_ii < 1:
             raise ValueError('target_ii must be positive.')
         self._stable_softmax = kwargs.pop('stable_softmax')
-        self._softmax_kind = kwargs.pop('softmax').lower()
+        self._softmax_kind: Literal['comb', '1pass', '2pass'] = kwargs.pop('softmax')
+        assert self._softmax_kind in ('comb', '1pass', '2pass'), "softmax must be 'comb', '1pass' or '2pass'."
         self._qkv_oq_conf: QuantizerConfig = self._qkvo_oq_conf
-        if self._softmax_kind == 'flash':
+        if self._softmax_kind != 'comb':
             self._qkv_oq_conf = copy(self._qkvo_oq_conf)
             self._qkv_oq_conf.config = self._qkv_oq_conf.config.copy()
             self._qkv_oq_conf.config.update(homogeneous_axis=None, bw_mapper=None)
             self._qkv_oq_conf.config['heterogeneous_axis'] = tuple(
                 a for a in self._qkv_oq_conf.config.get('heterogeneous_axis') or () if a in (2, 3, -2, -1)
             )
-        if self.target_ii is not None and self._softmax_kind != 'flash':
-            raise ValueError("target_ii prices the flash softmax; set softmax='flash' or omit target_ii.")
-        assert self._softmax_kind in ('plain', 'flash'), (
-            "softmax names the layer the scores are normalized by: 'plain' reads a whole row against its "
-            f"peak (QSoftmax) and 'flash' scans that row a key at a time (QFSoftmax), got {self._softmax_kind!r}."
-        )
+        if self.target_ii is not None and self._softmax_kind == 'comb':
+            raise ValueError("target_ii prices scan softmax; set softmax='1pass' or '2pass', or omit target_ii.")
         self._fuse = kwargs.pop('fuse', 'none').lower()
         self._inverse_sqrt_key_dim = 1.0 / math.sqrt(float(key_dim))
 
@@ -378,7 +376,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         )
         q_shape, v_shape, _ = shapes
         attn_score_shape = (None, self._num_heads, *q_shape[1:-1], *v_shape[1:-1])
-        if self._softmax_kind == 'flash':
+        if self._softmax_kind != 'comb':
             assert attn_scores_rank == 4, (
                 'the online softmax scans the one key axis of a [batch, heads, query, key] score matrix. '
                 'Input shapes must be [B, T, D] in 3D.'
@@ -387,6 +385,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
 
             context_shape = tuple(s for i, s in enumerate(attn_score_shape) if i != norm_axes[0]) + (self._value_dim,)
             self._softmax = QFSoftmax(
+                impl=self._softmax_kind,
                 enable_oq=False,
                 axis=norm_axes[0],
                 dtype=self.dtype_policy,
@@ -479,9 +478,9 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         bw_v = self._value_dense.oq.bits_(V_shape)
 
         ebops_qk = ops.einsum(self._dot_product_ebops_equation, bw_q, bw_k)
-        if self._softmax_kind == 'flash':
+        if self._softmax_kind != 'comb':
             softmax: QFSoftmax = self._softmax
-            keys = attn_score_shape[-1]
+            dk = attn_score_shape[-1]
             state_shape = (*attn_score_shape[:-1], 1)
             context_shape = (*attn_score_shape[:-1], self._value_dim)
 
@@ -493,23 +492,42 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             inv_bits = softmax.inv_table.oq.bits_(state_shape)
 
             comparisons = 3 * ops.sum(softmax.exp_table.iq.bits_(attn_score_shape))  # type: ignore
-            round_ebops = (
-                2 * ops.sum((2.0**exp_in_bits) * exp_bits) * 1e-4  # type: ignore
-                + ops.sum(exp_bits * l_bits)  # type: ignore
-                + ops.sum(l_bits)
-                + 2 * ops.sum(exp_bits * acc_bits)  # type: ignore
-            )
-            final_ebops = ops.sum((2.0**inv_in_bits) * inv_bits) * 1e-4 + ops.sum(acc_bits * inv_bits)  # type: ignore
+            if softmax.impl == '2pass':
+                comparisons += ops.sum(softmax.exp_table.iq.bits_(attn_score_shape))  # type: ignore
+                probability_bits = exp_bits + inv_bits  # type: ignore
+                round_ebops = (
+                    3 * table_ebops(exp_in_bits, exp_bits)  # type: ignore
+                    + ops.sum(exp_bits * l_bits)  # type: ignore
+                    + ops.sum(l_bits)  # type: ignore
+                    + table_ebops(inv_in_bits, inv_bits)  # type: ignore
+                    + ops.sum(exp_bits * inv_bits)  # type: ignore
+                    + ops.sum(acc_bits)  # type: ignore
+                    + ops.einsum(
+                        self._combine_ebops_equation,
+                        ops.broadcast_to(probability_bits, attn_score_shape),
+                        bw_v,
+                    )
+                    / dk
+                )
+                final_ebops = 0
+            else:
+                round_ebops = (
+                    2 * table_ebops(exp_in_bits, exp_bits)  # type: ignore
+                    + ops.sum(exp_bits * l_bits)  # type: ignore
+                    + ops.sum(l_bits)
+                    + 2 * ops.sum(exp_bits * acc_bits)  # type: ignore
+                )
+                final_ebops = table_ebops(inv_in_bits, inv_bits) + ops.sum(acc_bits * inv_bits)  # type: ignore
 
             if self.parallelization_factor < 0 and self.target_ii is not None:
                 cells = softmax.parallelization_factor
                 rows = self.n_parallel
                 return (
-                    ebops_qk * cells / (rows * keys)  # type: ignore
-                    + (comparisons / keys + round_ebops) * cells / rows
-                    + final_ebops * math.ceil(rows / self.target_ii) / rows
+                    ebops_qk * cells / (rows * dk)  # type: ignore
+                    + (comparisons / dk + round_ebops) * cells / rows
+                    + final_ebops * math.ceil(rows / self.target_ii) / rows  # type: ignore
                 )
-            return (ebops_qk + (comparisons + keys * round_ebops + final_ebops)) * factor
+            return (ebops_qk + (comparisons + dk * round_ebops + final_ebops)) * factor
 
         bw_attn = self._softmax.oq.bits_(attn_score_shape)
 
@@ -584,8 +602,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         return attention_output
 
     def _online_attention(self, query, key, value, attention_mask=None, training=None):
-        """One pass along the key axis carrying ``(m, l, O)``: the running maximum, the denominator, and
-        the value-weighted numerator, every product landed inside the fold."""
+        """Scan max/weight and fold values in the same pass or in a second pass, as the softmax states."""
 
         assert attention_mask is None, (
             f'{self.name} is configured to use online softmax (flash attention); attention_mask is not supported yet'
@@ -596,21 +613,46 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         scores = cast(KerasTensor, ops.einsum(self._dot_product_equation, key, query))
         m = cast(KerasTensor, ops.take(scores, [0], axis=-1))  # the first score, so every round below is identical
 
-        def round_(carry, xs):
-            m, weight, context = carry
-            score, served = xs
+        def statistics(m, weight, score):
             score = ops.expand_dims(score, axis=-1)  # [B, N, T, 1]
-            served = ops.expand_dims(served, axis=-2)  # [B, N, 1, H]
             m, previous = cast(KerasTensor, ops.maximum(m, score)), m
             rescale = softmax.exp_table(m - previous, training=training)  # EXP[m_prev - m], 1 on a quiet round
             share = softmax.exp_table(m - score, training=training)
             weight = softmax.lq(rescale * weight, training=training) + share
+            return m, weight, rescale, share
+
+        def round_(carry, xs):
+            m, weight, context = carry
+            score, served = xs
+            m, weight, rescale, share = statistics(m, weight, score)
+            served = ops.expand_dims(served, axis=-2)  # [B, N, 1, H]
             context = softmax.aq(rescale * context, training=training) + softmax.aq(share * served, training=training)
             return m, weight, context
 
         context = ops.zeros((*ops.shape(m)[:-1], self._value_dim))  # type: ignore
-        init = (m, ops.zeros_like(m), context)
         xs = (ops.moveaxis(scores, -1, 0), ops.moveaxis(value, 1, 0))
+        if softmax.impl == '2pass':
+
+            def stats(carry, xs):
+                return statistics(carry[0], carry[1], xs[0])[:2]
+
+            m, weight = scan_rounds(stats, (m, ops.zeros_like(m)), xs, [*softmax.exp_table.variables, *softmax.lq.variables])
+
+            def accumulate(context, xs):
+                score, served = xs
+                share = softmax.exp_table(m - ops.expand_dims(score, -1), training=training)
+                probability = share * softmax.inv_table(weight, training=training)
+                return softmax.aq(context, training=training) + softmax.aq(
+                    probability * ops.expand_dims(served, -2), training=training
+                )
+
+            context = scan_rounds(
+                accumulate, context, xs, [*softmax.exp_table.variables, *softmax.inv_table.variables, *softmax.aq.variables]
+            )
+            context = self._context_oq(context, training=training)
+            return ops.transpose(context, (0, 2, 1, 3)), None
+
+        init = (m, ops.zeros_like(m), context)
         _, weight, context = scan_rounds(
             round_, init, xs, [*softmax.exp_table.variables, *softmax.lq.variables, *softmax.aq.variables]
         )
@@ -651,7 +693,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         attention_scores : tensor
             Multi-headed attention weights.
         """
-        if self._softmax_kind == 'flash':
+        if self._softmax_kind != 'comb':
             return self._online_attention(query, key, value, attention_mask, training)
 
         # Note: Applying scalar multiply at the smaller end of einsum improves
