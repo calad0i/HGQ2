@@ -1,7 +1,9 @@
+from typing import cast
+
 import keras
 import numpy as np
 from alkaid.converter.builtin.keras.layers._base import ReplayOperationBase
-from alkaid.opsched.frontend import affine_scan, configure, scope, set_token_dim
+from alkaid.opsched.frontend import affine_scan, apply, configure, cut, scope, set_token_dim
 from alkaid.trace import FVArray
 
 from hgq.layers import QAffinedUnaryFunctionLUT, QFSoftmax, QSoftmax, QUnaryFunctionLUT
@@ -22,7 +24,7 @@ class _QFunctionLUT(QLayerMixin, ReplayOperationBase):
                 ky = ky * op.scale + op.bias
             return keras.ops.convert_to_numpy(op.activation(ky)[0])  # type: ignore
 
-        return x.apply(activation)
+        return apply(x, activation)  # type: ignore
 
 
 class _QSoftmax(QLayerMixin, ReplayOperationBase):
@@ -60,11 +62,34 @@ class _QFSoftmax(QLayerMixin, ReplayOperationBase):
             sequence = set_token_dim(np.transpose(inputs, order)[..., None], -1)
         exponential = _QFunctionLUT(op.exp_table)
 
-        def cell(token, state):
-            peak = np.where(state[-1:], np.maximum(state[:1], token), token)
-            rescale = exponential(peak - state[:1])['final'][0]
+        def statistics(token, peak, weight, seen):
+            previous = peak
+            peak = np.where(seen, np.maximum(peak, token), token)
+            rescale = exponential(peak - previous)['final'][0]
             share = exponential(peak - token)['final'][0]
-            weight = mirror_quantizer(op.lq, rescale * state[1:2]) + share
+            weight = mirror_quantizer(op.lq, rescale * weight) + share
+            return peak, weight, rescale, share
+
+        if op.impl == '2pass':
+            seen = np.broadcast_to((np.arange(inputs.shape[op.axis]) != 0)[:, None], sequence.shape)
+
+            def stats(token, state):
+                return np.concatenate(statistics(token[:1], state[:1], state[1:2], token[1:2])[:2])
+
+            carried = affine_scan(stats, np.concatenate([sequence, seen], axis=-1), np.zeros(2), name=op.name)
+            configure(carried, parallel_firings=op.parallelization_factor)
+            final = np.broadcast_to(carried[..., -1:, :], (*sequence.shape[:-1], 2))
+
+            def normalize(token):
+                return exponential(token[1:2] - token[:1])['final'][0] * _QFunctionLUT(op.inv_table)(token[2:3])['final'][0]
+
+            normalized = affine_scan(normalize, np.concatenate([sequence, final], axis=-1), None, name=f'{op.name}_normalize')
+            normalized = cut(normalized)
+            configure(normalized, parallel_firings=op.parallelization_factor)
+            return cast(FVArray, np.transpose(normalized[..., 0], np.argsort(order)))
+
+        def cell(token, state):
+            peak, weight, rescale, share = statistics(token, state[:1], state[1:2], state[-1:])
             held = mirror_quantizer(op.aq, rescale * state[3:-1])
             return np.concatenate([peak, weight, held, mirror_quantizer(op.aq, share), np.ones(1)])
 
@@ -72,4 +97,4 @@ class _QFSoftmax(QLayerMixin, ReplayOperationBase):
         configure(carried, parallel_firings=op.parallelization_factor)
         final = carried[..., -1, :]
         normalized = final[..., 2:-1] * _QFunctionLUT(op.inv_table)(final[..., 1:2])['final'][0]
-        return np.transpose(normalized, np.argsort(order))
+        return cast(FVArray, np.transpose(normalized, np.argsort(order)))
