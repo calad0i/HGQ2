@@ -4,7 +4,6 @@ from math import prod, sqrt
 import keras
 import numpy as np
 from alkaid.converter.builtin.keras.layers._base import ReplayOperationBase, to_np_arr
-from alkaid.opsched.frontend import SymbolicTensor, apply_in_patches, token_apply
 from alkaid.trace import FVArray
 from alkaid.trace.ops import _quantize
 from keras import ops
@@ -13,6 +12,11 @@ from hgq.layers.table import QConvT1D, QConvT2D, QConvTBase, QDenseT, QEinsumDen
 from hgq.quantizer.internal import FixedPointQuantizerBase
 
 from ._base import QLayerMixin, mirror_quantizer
+
+try:
+    from alkaid.opsched.frontend import SymbolicTensor, apply_in_patches, token_apply
+except ImportError:
+    raise RuntimeError('alkaid>=0.9.0beta1 is required for this version of hgq2. Please upgrade alkaid or install hgq2<0.3.')
 
 
 def keras_act_to_numpy(act: Callable) -> Callable:

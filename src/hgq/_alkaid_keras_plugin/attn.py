@@ -2,7 +2,6 @@ from typing import cast
 
 import numpy as np
 from alkaid.converter.builtin.keras.layers import ReplayOperationBase
-from alkaid.opsched.frontend import affine_scan, cut, named
 from alkaid.trace import FVArray
 from alkaid.trace.ops import quantize
 
@@ -14,6 +13,11 @@ from ._base import mirror_quantizer, to_np_arr
 from .activation import _QFunctionLUT, _QSoftmax
 from .core import _QConv, _QDense
 from .table import _QEinsumDenseTable
+
+try:
+    from alkaid.opsched.frontend import affine_scan, cut, named
+except ImportError:
+    raise RuntimeError('alkaid>=0.9.0beta1 is required for this version of hgq2. Please upgrade alkaid or install hgq2<0.3.')
 
 
 class _QMHA(ReplayOperationBase):

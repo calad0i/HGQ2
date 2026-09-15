@@ -1,12 +1,16 @@
 import numpy as np
 from alkaid.converter.builtin.keras.layers._base import ReplayOperationBase, to_np_arr
 from alkaid.converter.builtin.keras.layers.activation import keras_unary_to_numpy
-from alkaid.opsched.frontend import affine_scan
 from alkaid.trace import FVArray
 
 from hgq.layers.rnn import QGRU, QGRUCell, QSimpleRNN, QSimpleRNNCell
 
 from ._base import mirror_quantizer
+
+try:
+    from alkaid.opsched.frontend import affine_scan
+except ImportError:
+    raise RuntimeError('alkaid>=0.9.0beta1 is required for this version of hgq2. Please upgrade alkaid or install hgq2<0.3.')
 
 
 class _QRNNReplay(ReplayOperationBase):

@@ -3,12 +3,16 @@ from typing import cast
 import keras
 import numpy as np
 from alkaid.converter.builtin.keras.layers._base import ReplayOperationBase
-from alkaid.opsched.frontend import affine_scan, apply, configure, cut, scope, set_token_dim
 from alkaid.trace import FVArray
 
 from hgq.layers import QAffinedUnaryFunctionLUT, QFSoftmax, QSoftmax, QUnaryFunctionLUT
 
 from ._base import QLayerMixin, mirror_quantizer
+
+try:
+    from alkaid.opsched.frontend import affine_scan, apply, configure, cut, scope, set_token_dim
+except ImportError:
+    raise RuntimeError('alkaid>=0.9.0beta1 is required for this version of hgq2. Please upgrade alkaid or install hgq2<0.3.')
 
 
 class _QFunctionLUT(QLayerMixin, ReplayOperationBase):
