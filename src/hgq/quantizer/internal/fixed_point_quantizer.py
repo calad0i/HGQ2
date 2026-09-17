@@ -145,9 +145,8 @@ class FixedPointQuantizerBase(TrainableQuantizerBase):
         i = self.bw_mapper.bw_to_x(i, ops.shape(inputs))
         f = self.bw_mapper.bw_to_x(f, ops.shape(inputs))
         ret = self.stateless_quantizer(inputs, k, i, f, training is True, self.seed_gen)
-        if not training:
-            ret = ops.where(k + i + f > 0, ret, ops.zeros_like(ret))  # type: ignore
-        return ret
+        _ret = ops.where(k + i + f > 0, ret, ops.zeros_like(ret))  # type: ignore
+        return ops.stop_gradient(_ret - ret) + ret  # type: ignore
 
 
 class FixedPointQuantizerKBI(FixedPointQuantizerBase):
