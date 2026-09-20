@@ -383,9 +383,12 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             assert not self._dropout, 'dropout is not supported for online softmax'
 
             context_shape = tuple(s for i, s in enumerate(attn_score_shape) if i != norm_axes[0]) + (self._value_dim,)
+            # The score rides the arrival tape in both online paths, so both land it; only the 2-pass path
+            # forms the probability inside its loop, so only it lands one.
             self._softmax = QFSoftmax(
                 impl=self._softmax_kind,
-                enable_oq=False,
+                enable_iq=True,
+                enable_oq=self._softmax_kind == '2pass',
                 axis=norm_axes[0],
                 dtype=self.dtype_policy,
                 iq_conf=self._softmax_iq_conf,
@@ -395,6 +398,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 inv_oq_conf=self._softmax_inv_oq_conf,
                 lq_conf=self._softmax_lq_conf,
                 aq_conf=self._softmax_aq_conf,
+                oq_conf=self._softmax_oq_conf,
                 accumulator_shape=context_shape,
                 allow_heterogeneous_table=self._softmax_allow_heterogeneous_table,
                 input_scaler=self._inverse_sqrt_key_dim,
@@ -488,10 +492,10 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             inv_in_bits = softmax.inv_table.iq.bits_(state_shape)
             inv_bits = softmax.inv_table.oq.bits_(state_shape)
 
-            comparisons = 3 * ops.sum(softmax.exp_table.iq.bits_(attn_score_shape))  # type: ignore
+            comparisons = 3 * ops.sum(softmax.iq.bits_(attn_score_shape))  # type: ignore
             if softmax.impl == '2pass':
-                comparisons += ops.sum(softmax.exp_table.iq.bits_(attn_score_shape))  # type: ignore
-                probability_bits = exp_bits + inv_bits  # type: ignore
+                comparisons += ops.sum(softmax.iq.bits_(attn_score_shape))  # type: ignore
+                probability_bits = softmax.oq.bits_(state_shape)
                 round_ebops = (
                     3 * table_ebops(exp_in_bits, exp_bits)  # type: ignore
                     + ops.sum(exp_bits * l_bits)  # type: ignore
@@ -601,13 +605,16 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
     def _online_attention(self, query, key, value, attention_mask=None, training=None):
         """Scan max/weight and fold values in the same pass or in a second pass, as the softmax states."""
 
+        assert self._fuse == 'none', (
+            f"{self.name}: softmax='{self._softmax_kind}' streams key/value per token; set fuse='none' (got '{self._fuse}')."
+        )
         assert attention_mask is None, (
             f'{self.name} is configured to use online softmax (flash attention); attention_mask is not supported yet'
         )
         softmax: QFSoftmax = self._softmax
 
         # [B, N, T, S]; the 1/sqrt(key_dim) the scores are read at rides in the exponential's own table.
-        scores = cast(KerasTensor, ops.einsum(self._dot_product_equation, key, query))
+        scores = softmax.iq(cast(KerasTensor, ops.einsum(self._dot_product_equation, key, query)), training=training)
         m = cast(KerasTensor, ops.take(scores, [0], axis=-1))  # the first score, so every round below is identical
 
         def statistics(m, weight, score):
@@ -638,13 +645,16 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             def accumulate(context, xs):
                 score, served = xs
                 share = softmax.exp_table(m - ops.expand_dims(score, -1), training=training)
-                probability = share * softmax.inv_table(weight, training=training)
+                probability = softmax.oq(share * softmax.inv_table(weight, training=training), training=training)
                 return softmax.aq(context, training=training) + softmax.aq(
                     probability * ops.expand_dims(served, -2), training=training
                 )
 
             context = scan_rounds(
-                accumulate, context, xs, [*softmax.exp_table.variables, *softmax.inv_table.variables, *softmax.aq.variables]
+                accumulate,
+                context,
+                xs,
+                [*softmax.exp_table.variables, *softmax.inv_table.variables, *softmax.oq.variables, *softmax.aq.variables],
             )
             return ops.transpose(context, (0, 2, 1, 3)), None
 

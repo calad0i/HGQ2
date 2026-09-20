@@ -15,7 +15,7 @@ from .core import _QConv, _QDense
 from .table import _QEinsumDenseTable
 
 try:
-    from alkaid.opsched.frontend import affine_scan, cut, named
+    from alkaid.opsched.frontend import affine_scan, cut, named, set_token_dim
 except ImportError:
     raise RuntimeError('alkaid>=0.9.0beta1 is required for this version of hgq2. Please upgrade alkaid or install hgq2<0.3.')
 
@@ -105,15 +105,17 @@ class _QMHA(ReplayOperationBase):
         return contexts, attends
 
     def _online_attention(self, op: QMultiHeadAttention, query, key, value, mask):
+        assert op._fuse == 'none', f'{op.name}: fused qkv projection is not supported in flash attn impl'
         assert mask is None, "Scan attention does not support masks; drop the mask or set softmax='comb'."
         softmax: QFSoftmax = op._softmax
         head = op._dot_product_equation.split(',')[1].split('->')[0][-2]
         scored = op._dot_product_equation.replace(head, '')
         depth = np.shape(value)[-1]
         arriving, carrying = 1 + depth, 2 if softmax.impl == '2pass' else 2 + depth
+        value = cut(value, f'{op.name}_value')
         lanes = []
         for h in range(op._num_heads):
-            scores = np.einsum(scored, key[..., h, :], query[..., h, :])
+            scores = self._at_head(softmax.iq, np.einsum(scored, key[..., h, :], query[..., h, :]), h, lanes=1)
             lanes += [scores[..., None], np.broadcast_to(value[..., h, :][:, None], (*np.shape(scores), depth))]
         arrival = named(np.concatenate(lanes, axis=-1), f'{op.name}_arrival')
 
@@ -156,7 +158,8 @@ class _QMHA(ReplayOperationBase):
                     served = token[h * arriving + 1 : (h + 1) * arriving]
                     offset = op._num_heads * arriving + 2 * h
                     peak, weight = token[offset : offset + 1], token[offset + 1 : offset + 2]
-                    probability = self._table(softmax.exp_table, peak - score, h) * self._table(softmax.inv_table, weight, h)
+                    share = self._table(softmax.exp_table, peak - score, h)
+                    probability = self._at_head(softmax.oq, share * self._table(softmax.inv_table, weight, h), h, lanes=1)
                     output = state[h * depth : (h + 1) * depth]
                     outputs.append(
                         self._at_head(softmax.aq, output, h, lanes=depth)
@@ -219,6 +222,7 @@ class _QMHA(ReplayOperationBase):
             project = _QEinsumDenseTable if getattr(op, '_lin_kv_proj_mode', 'dense') == 'dense_t' else _QDense
             key = cast(FVArray, project(op._lin_k_proj)(key)['final'][0])
             value = cast(FVArray, project(op._lin_v_proj)(value)['final'][0])
+            key, value = set_token_dim(key, -1), set_token_dim(value, -1)
         masks = []
         for mask, axis in ((query_mask, -1), (value_mask, -2), (key_mask, -2)):
             if mask is not None:
