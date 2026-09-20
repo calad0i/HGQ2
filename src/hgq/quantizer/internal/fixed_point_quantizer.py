@@ -31,6 +31,18 @@ def minimal_i_given_xf(x, f, symmetric=False):
     return ops.where(x >= 0, i_pos, i_neg)
 
 
+@ops.custom_gradient
+def replace_grad(value_src, grad_src):
+    # stop_gradient(value_src - grad_src) + grad_src
+
+    def grad(*args, upstream=None):
+        if upstream is None:
+            (upstream,) = args
+        return ops.zeros_like(value_src), upstream
+
+    return value_src, grad
+
+
 class FixedPointQuantizerBase(TrainableQuantizerBase):
     """Abstract base class for all fixed-point quantizers."""
 
@@ -146,7 +158,7 @@ class FixedPointQuantizerBase(TrainableQuantizerBase):
         f = self.bw_mapper.bw_to_x(f, ops.shape(inputs))
         ret = self.stateless_quantizer(inputs, k, i, f, training is True, self.seed_gen)
         _ret = ops.where(k + i + f > 0, ret, ops.zeros_like(ret))  # type: ignore
-        return ops.stop_gradient(_ret - ret) + ret  # type: ignore
+        return replace_grad(_ret, ret)
 
 
 class FixedPointQuantizerKBI(FixedPointQuantizerBase):
