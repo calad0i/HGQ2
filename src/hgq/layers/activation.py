@@ -10,7 +10,7 @@ from .core.base import QLayerBaseSingleInput
 
 def table_ebops(in_bits: KerasTensor, out_bits: KerasTensor) -> KerasTensor:
     extra = in_bits - 6  # LUT6
-    small = out_bits * 2.0 ** ops.maximum(extra, 0)  # type: ignore
+    small = out_bits * ops.maximum(1.5625 - 0.109375 * out_bits, 1.0) * 2.0 ** ops.maximum(extra, 0)  # type: ignore
     return ops.sum(ops.where(extra > 6, 0.5 * 2.0**extra, small))  # type: ignore
 
 

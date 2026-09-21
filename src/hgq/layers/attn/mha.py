@@ -19,6 +19,13 @@ from ..fsoftmax import QFSoftmax, scan_rounds
 from ..softmax import QSoftmax
 from ..table import QEinsumDenseT
 
+try:
+    from alkaid.opsched.passes import _cover_firings
+except ImportError:
+
+    def _cover_firings(target: int, shape: tuple[int, ...]) -> tuple[int, int]:
+        return max(1, target // math.prod(shape)), 0
+
 
 def _get_output_shape(output_rank, known_last_dims, input_shape):
     n = output_rank - len(known_last_dims)
@@ -284,15 +291,16 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 # temporary alkaid matched impl, used iff pf<0
                 denses = (self._query_dense, self._key_dense, self._value_dense, self._output_dense)
                 terms = (query_shape[-1], key_shape[-1], value_shape[-1], self._value_dim)
-                for dense, contraction in zip(denses, terms):
-                    budget = min(contraction, max(1, self.target_ii // dense.n_parallel))
+                spans = (query_shape[1:-1], key_shape[1:-1], value_shape[1:-1], query_shape[1:-1])
+                for dense, extents, contraction in zip(denses, spans, terms):
+                    cycles, copies = _cover_firings(self.target_ii, extents)
+                    budget = min(contraction, cycles)
                     if dense.n_parallel == 1:
                         budget = 1
                     unroll = math.ceil(contraction / budget)
                     steps = math.ceil(contraction / unroll)
-                    if steps < 8:  # ak heuristic for serial vs DA impl, temp
-                        steps, unroll = 1, contraction
-                    dense.parallelization_factor = math.ceil(dense.n_parallel / (self.target_ii // steps))
+                    workers = math.ceil(dense.n_parallel / (self.target_ii // steps))
+                    dense.parallelization_factor = copies if copies and steps > 1 else workers
                     # fraction of the contraction a serial step in parallel
                     dense.ebops_factor = unroll / contraction
                 self._softmax.parallelization_factor = math.ceil(self.n_parallel * value_shape[1] / self.target_ii)
