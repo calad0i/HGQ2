@@ -25,20 +25,26 @@ def scan_rounds(fn: Callable, init, xs, variables):
     compiled as one traced round.
     """
 
+    reads = [(variable, variable.value) for variable in variables]
+    with keras.StatelessScope(reads) as probe:
+        fn(init, tuple(x[0] for x in xs))
+    written = [variable for variable, read in reads if probe.get_current_value(variable) is not read]
+    frozen = [(variable, read) for variable, read in reads if probe.get_current_value(variable) is read]
+
     def traced(carry, x):
         carry, values = carry
-        with keras.StatelessScope(zip(variables, values)) as scope:
+        with keras.StatelessScope([*zip(written, values), *frozen]) as scope:
             carry = fn(carry, x)
-        return (carry, tuple(scope.get_current_value(variable) for variable in variables)), None
+        return (carry, tuple(scope.get_current_value(variable) for variable in written)), None
 
-    carry = (init, tuple(variable.value for variable in variables))
+    carry = (init, tuple(variable.value for variable in written))
     if keras.backend.backend() != 'tensorflow':
         carry, _ = ops.scan(traced, carry, xs)  # type: ignore
     else:
         for i in range(int(xs[0].shape[0])):
             carry, _ = traced(carry, tuple(x[i] for x in xs))
     carry, values = carry
-    for variable, value in zip(variables, values):
+    for variable, value in zip(written, values):
         variable.assign(value)
     return carry
 
@@ -67,12 +73,13 @@ class QFSoftmax(QSoftmax):
         lane_axes = (axis,) if accumulator_shape is None else (-1, len(accumulator_shape) - 1)
         head_axes = () if accumulator_shape is None else (1, 1 - len(accumulator_shape))
         kwargs.update(iq_conf=iq_conf, lq_conf=lq_conf, aq_conf=aq_conf)
-        for name in ('iq_conf', 'lq_conf', 'aq_conf', 'exp_iq_conf', 'exp_oq_conf', 'inv_iq_conf', 'inv_oq_conf'):
-            conf = copy(kwargs.get(name) or QuantizerConfig('default', 'table' if name.endswith('oq_conf') else 'datalane'))
+        for name in ('iq_conf', 'oq_conf', 'lq_conf', 'aq_conf', 'exp_iq_conf', 'exp_oq_conf', 'inv_iq_conf', 'inv_oq_conf'):
+            place = 'table' if name in ('exp_oq_conf', 'inv_oq_conf') else 'datalane'
+            conf = copy(kwargs.get(name) or QuantizerConfig('default', place))
             conf.config = conf.config.copy()
             conf.config.update(homogeneous_axis=None, bw_mapper=None)
             conf.config['heterogeneous_axis'] = tuple(
-                a for a in conf.config.get('heterogeneous_axis') or () if a in head_axes or name == 'aq_conf' and a in lane_axes
+                a for a in (conf.config.get('heterogeneous_axis') or ()) if a in head_axes or name == 'aq_conf' and a in lane_axes
             )
             kwargs[name] = conf
         lq_conf = cast(QuantizerConfig, kwargs.pop('lq_conf'))
