@@ -1,17 +1,17 @@
-from collections.abc import Callable
-from math import prod, sqrt
+from math import prod
 
-import keras
 import numpy as np
 from alkaid.converter.builtin.keras.layers._base import ReplayOperationBase, to_np_arr
 from alkaid.trace import FVArray
-from alkaid.trace.ops import _quantize
+from alkaid.trace.ops import _quantize, quantize
 from keras import ops
+from keras.src.utils.tracking import DotNotTrackScope
 
 from hgq.layers.table import QConvT1D, QConvT2D, QConvTBase, QDenseT, QEinsumDenseT
+from hgq.quantizer import Quantizer
 from hgq.quantizer.internal import FixedPointQuantizerBase
 
-from ._base import QLayerMixin, mirror_quantizer
+from ._base import QLayerMixin
 
 try:
     from alkaid.opsched.frontend import SymbolicTensor, apply_in_patches, token_apply
@@ -19,209 +19,121 @@ except ImportError:
     raise RuntimeError('alkaid>=0.9.0beta1 is required for this version of hgq2. Please upgrade alkaid or install hgq2<0.3.')
 
 
-def keras_act_to_numpy(act: Callable) -> Callable:
-    match act:
-        case keras.activations.relu:
-            return lambda x: np.maximum(0, x)
-        case keras.activations.tanh:
-            return np.tanh
-        case keras.activations.softmax:
-            raise ValueError('Non-local activation must not be used')
-        case keras.activations.linear:
-            return lambda x: x
-        case keras.activations.sigmoid:
-            return lambda x: 1 / (1 + np.exp(-x))
-        case keras.activations.swish:
-            return lambda x: x / (1 + np.exp(-x))
-        case keras.activations.gelu:
-            return lambda x: 0.5 * x * (1 + np.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * np.power(x, 3))))
-        case keras.activations.elu:
-            return lambda x: np.where(x > 0, x, np.exp(x) - 1)
-        case keras.activations.selu:
-            alpha = 1.6732632423543772
-            scale = 1.0507009873554805
-            return lambda x: scale * np.where(x > 0, x, alpha * (np.exp(x) - 1))
-        case keras.activations.softplus:
-            return lambda x: np.log1p(np.exp(x))
-        case keras.activations.softsign:
-            return lambda x: x / (1 + np.abs(x))
-        case keras.activations.exponential:
-            return lambda x: np.exp(x)
-        case keras.activations.hard_silu:
-            return lambda x: x * np.minimum(1, np.maximum(0, (x + 1) / 2))
-        case _:
-            return lambda x: ops.convert_to_numpy(act(ops.convert_to_tensor(x)))
+def _spread(quantizer: Quantizer, grid: tuple[int, ...]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The quantizer's (k, i, f), each spread over one presum ``grid`` the way the layer states it."""
+
+    internal: FixedPointQuantizerBase = quantizer.quantizer
+    return tuple(to_np_arr(internal.bw_mapper.bw_to_x(v, (1,) + grid)).astype(np.int32).reshape(grid) for v in internal.kif)  # type: ignore
+
+
+def _entries(op: QEinsumDenseT, low: np.ndarray, high: np.ndarray, step: np.ndarray) -> np.ndarray:
+    """Every presum position's table: the sub-network replayed over the lattice that position landed on, right padded
+    to the deepest of them, with the layer's batch norm and table quantizer folded into the entries."""
+
+    grid = low.shape
+    entries = np.arange(int(np.rint((high - low) / step).max()) + 1).reshape((-1,) + (1,) * len(grid))
+    # The sub-network is replayed as it stands, on one grid carrying every position's own lattice at once:
+    # entry t of a position is its low plus t of its steps, and the deepest lattice is how far the grid runs.
+    read = op.module((low + entries * step).reshape((-1, *grid[1:])).astype(op.dtype)[..., None])
+    # The layer folds its own batch norm over the presum grid, which the entries ride as the batch axis.
+    content = to_np_arr(op._apply_batch_norm(ops.expand_dims(read, 1))).reshape(len(entries), -1).T.reshape((*grid, len(entries)))
+
+    toq: FixedPointQuantizerBase = op.toq.quantizer
+    round_mode = toq.round_mode[2:] if toq.round_mode.startswith('S_') else toq.round_mode
+    stated = (side.reshape((*grid, 1)) for side in _spread(op.toq, grid))
+    return _quantize(content, *stated, toq.overflow_mode, round_mode)
+
+
+def _lookup_and_sum(block, op: QEinsumDenseT, lanes: tuple[int, ...], columns: tuple[int, ...]):
+    """Land every value of one block on the layer's own iq lattice, read the table its own presum position owns and
+    sum the contracted axes away. The presum grid is ``lanes + columns``: one value a lane, spread over the columns
+    it feeds, and every position of it answers on the lattice it is handed."""
+
+    grid = (*lanes, *columns)
+    values = np.broadcast_to(np.reshape(np.atleast_1d(block), (*lanes, *(1,) * len(columns))), grid)
+    iq: FixedPointQuantizerBase = op.iq.quantizer
+    k, i, f = _spread(op.iq, grid)
+    landed = quantize(values, k, i, f, overflow_mode=iq.overflow_mode, round_mode=iq.round_mode)
+    low, high, step = landed.lhs
+    content = _entries(op, low, high, step)
+    depths = np.rint((high - low) / step).astype(np.intp) + 1
+    reads = np.empty(grid, dtype=object)
+    for place in np.ndindex(*grid):
+        reads[place] = landed[place].lookup(content[place][: depths[place]])
+    # The latency-ordered heap is the fold a summed table read has always taken.
+    return np.sum(FVArray(reads, landed.solver_options, hwconf=landed.hwconf), axis=op._contract_axes)
 
 
 class _QEinsumDenseTable(QLayerMixin, ReplayOperationBase):
     handles = (QEinsumDenseT,)
     __input_quantizer_handled__ = True
 
-    def _broadcast_inputs(self, inputs: FVArray, op: QEinsumDenseT) -> FVArray:
-        # One firing's sample stands at extent one on the axes the layer fires over, so the shape it is
-        # read at is its own; only the kernel axes it broadcasts into are the layer's.
-        rank = len(inputs.shape)
-        _, out_shape = op._broadcast_shapes(inputs.shape)
-        return np.broadcast_to(inputs[(..., *[None] * (len(out_shape) - rank))], inputs.shape + out_shape[rank:])  # type: ignore
-
-    def _axes(self, out_shape: tuple[int, ...]) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
-        op: QEinsumDenseT = self.op  # type: ignore
-        return op._kernel_axes, op._contract_axes, op._output_transpose
-
-    def _gather_layer_weights(self, model: keras.Sequential, kernel_coords):
-        ws: list[np.ndarray] = []
-        bs: list[np.ndarray | None] = []
-        acts: list[Callable[[np.ndarray], np.ndarray]] = []
-        for layer in model.layers:
-            layer: keras.layers.EinsumDense
-            w, *b = layer.get_weights()
-            w = w[kernel_coords]
-            if w.ndim == 2:
-                w = w[..., None]
-            if len(b) != 0:
-                assert len(b) == 1
-                _b = b[0][kernel_coords]
-                if _b.ndim == 1:
-                    _b = _b[..., None]
-            else:
-                _b = None
-            ws.append(w)
-            bs.append(_b)
-            acts.append(keras_act_to_numpy(layer.activation))
-        return ws, bs, acts
-
-    def _apply_batch_norm(self, tables: list[np.ndarray], out_shape: tuple[int, ...], op: QEinsumDenseT):
-        if not op.enable_bn:
-            return
-
-        beta: np.ndarray = ops.convert_to_numpy(op.bn_beta) if op.bn_center else 0  # type: ignore
-        gamma: np.ndarray = ops.convert_to_numpy(op.bn_gamma) if op.bn_scale else 1  # type: ignore
-        m_mean: np.ndarray = ops.convert_to_numpy(op.moving_mean)  # type: ignore
-        m_var: np.ndarray = ops.convert_to_numpy(op.moving_variance)  # type: ignore
-        scaler = gamma / np.sqrt(m_var + op.bn_epsilon)
-        offset = beta - m_mean * scaler
-
-        for i, table in enumerate(tables):
-            coord = np.unravel_index(i, out_shape)
-            bn_coord = tuple(coord[axis] for axis in op._bn_axes)
-            table[:] = (table * scaler[bn_coord] + offset[bn_coord]) / sqrt(op.n_in)
-
-    def _tabulated(self, sample: FVArray) -> FVArray:
-        """One whole sample read through the layer's tables."""
-
-        op: QEinsumDenseT = self.op  # type: ignore
-
-        out: FVArray = self._broadcast_inputs(sample, op)
-        if op.enable_iq:
-            out = mirror_quantizer(op.iq, out)
-
-        tabulated = isinstance(out, FVArray)
-        l, h, s = out.lhs if tabulated else (out, out, np.ones_like(out))
-        table_sizes: np.ndarray = np.round((h - l) / s).astype(np.uint32) + 1
-        out_shape: tuple[int, ...] = out.shape
-        kernel_axes, contract_axes, transpose = self._axes(out_shape)
-        tables: list[np.ndarray] = [None] * prod(out_shape)  # type: ignore
-        n, loc = np.unique(table_sizes, return_inverse=True)
-
-        work_dtype = op.dtype
-        for i in range(n.size):
-            mask: np.ndarray = loc == i
-            _l, _h = l[mask], h[mask]
-            inp = np.linspace(_l, _h, n[i], dtype=work_dtype)
-            _out = inp[..., None]
-
-            idxs = np.where(mask.ravel())[0]
-            coords = np.array(np.unravel_index(idxs, out_shape)).T
-            kernel_coords = tuple(coords[:, axis] for axis in kernel_axes)
-            ws, bs, acts = self._gather_layer_weights(op.module, kernel_coords)
-
-            for w, b, act in zip(ws, bs, acts):
-                _out = act(np.einsum('...ni,nij->...nj', _out, w, optimize='optimal') + (0 if b is None else b))
-            _out = _out[..., 0]
-
-            for j, idx in enumerate(idxs):
-                tables[idx] = _out[..., j]
-
-        assert all(v is not None for v in tables), tables
-        self._apply_batch_norm(tables, out_shape, op)
-
-        toq = op.toq
-        toq_internal: FixedPointQuantizerBase = toq.quantizer
-        kk, ki, kf = toq_internal.kif
-
-        _shape = (1,) + out.shape
-        kk = toq_internal.bw_mapper.bw_to_x(kk, _shape)
-        ki = toq_internal.bw_mapper.bw_to_x(ki, _shape)
-        kf = toq_internal.bw_mapper.bw_to_x(kf, _shape)
-
-        k, i, f = map(lambda x: to_np_arr(x).astype(np.int32).ravel(), (kk, ki, kf))
-
-        round_mode, overflow_mode = toq_internal.round_mode, toq_internal.overflow_mode
-        round_mode = round_mode[2:] if round_mode.startswith('S_') else round_mode
-        for arr, _k, _i, _f in zip(tables, k, i, f):
-            arr[:] = _quantize(arr, _k, _i, _f, overflow_mode, round_mode)
-
-        flat = np.asarray(out).ravel()
-        ret_vars = [flat[idx].lookup(table) if tabulated else table[0] for idx, table in enumerate(tables)]  # type: ignore
-        answer = np.array(ret_vars).reshape(out_shape)
-        if tabulated:
-            answer = FVArray(answer, out.solver_options, hwconf=out.hwconf)
-        return np.transpose(np.sum(answer, axis=contract_axes), transpose)  # type: ignore
+    def __init__(self, op: QEinsumDenseT):
+        super().__init__(op)  # type: ignore[call-arg]
+        #: The einsum layer whose tables the replay reads; a dense or conv table carries its weights on an ephemeral one.
+        self.table: QEinsumDenseT = op
 
     def call(self, inputs: FVArray) -> FVArray:
-        op: QEinsumDenseT = self.op  # type: ignore
-
-        if not isinstance(inputs, SymbolicTensor):
-            return self._tabulated(inputs)
-
-        token = tuple(inputs.token_shape)  # type: ignore
-        fires = len(inputs.shape) - 1 - len(token)  # type: ignore
-
-        sample = (1,) + (1,) * fires + token
-        presum: tuple[int, ...] = self._broadcast_inputs(np.zeros(sample), op).shape  # type: ignore
-        for name, quantizer in ((('iq', op.iq),) if op.enable_iq else ()) + (('toq', op.toq),):
-            spread = [np.shape(to_np_arr(v)) for v in quantizer.quantizer.kif]
-            over = tuple(shape for shape in spread if np.broadcast_shapes(shape, presum) != presum)
-            assert not over, (
-                f"{type(op).__name__} '{op.name}': {name} is too heterogeneous."
-                f'Configure it with homogeneous_axis={tuple(range(1 + fires))} so all positions share it'
-            )
-
-        _, contract_axes, transpose = self._axes(presum)
-        contracted = {axis % len(presum) for axis in contract_axes}
-        kept = tuple(dim for axis, dim in enumerate(presum) if axis not in contracted)
-        emits = tuple(kept[axis] for axis in transpose)[1 + fires :]
-        return token_apply(
-            inputs,  # type: ignore
-            lambda chunk: np.reshape(self._tabulated(np.reshape(chunk, sample)), emits),  # type: ignore
-            emits=emits,  # type: ignore
+        op = self.table
+        assert op.enable_iq, (
+            f"{type(op).__name__} '{op.name}': a tabulated contraction needs a declared iq lattice; build it with enable_iq=True"
         )
+        shape = tuple(inputs.shape)
+        _, presum = op._broadcast_shapes(shape)
+        traced = isinstance(inputs, SymbolicTensor)
+        rank = len(shape) - len(inputs.token_shape if traced else shape[1:])  # type: ignore
+        # The tables differ along the axes the kernel indexes and along the axes a quantizer states its own precision
+        # at, so the firings from the first of those on are read in one call and the ones before it stream.
+        stated = [to_np_arr(side).shape for quantizer in (op.iq, op.toq) for side in quantizer.quantizer.kif]
+        differ = {*op._kernel_axes, *op._contract_axes}
+        differ.update(len(presum) - n for axes in stated for n, size in enumerate(reversed(axes), 1) if size > 1)
+        split = min((axis for axis in differ if 0 < axis < rank), default=rank)
+        # A firing the contraction sums away has to ride in the token; one the tables merely differ along is a tile.
+        merged = min((axis for axis in op._contract_axes if split <= axis < rank), default=rank)
+        presum = (1,) * split + presum[split:]
+
+        def cell(block):
+            """One firing's block -- its tile positions among its lanes -- read through the tables it lands on."""
+
+            return _lookup_and_sum(block, op, presum[: len(shape)], presum[len(shape) :])
+
+        if not traced:
+            return np.transpose(cell(inputs), op._output_transpose)  # type: ignore
+        block = inputs if merged == rank else np.reshape(inputs, (*shape[:merged], prod(shape[merged:])))
+        emits = tuple(size for axis, size in enumerate(presum) if axis >= merged and axis not in op._contract_axes)
+        read = token_apply(block, cell, emits=emits, fused_tile=presum[:merged])
+        return np.transpose(read, op._output_transpose)  # type: ignore
 
 
 class _QDenseTable(_QEinsumDenseTable):
     handles = (QDenseT,)
 
-    def _broadcast_inputs(self, inputs: FVArray, op: QDenseT) -> FVArray:  # type: ignore[override]
-        return np.broadcast_to(inputs[..., None], inputs.shape + (op.n_out,))  # type: ignore
+    def __init__(self, op: QDenseT):
+        """A dense table is the einsum table of ``...i,ij->...j``, and its trained parts ride an ephemeral one."""
 
-    def _axes(self, out_shape: tuple[int, ...]) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
-        return (-2, -1), (-2,), tuple(range(len(out_shape) - 1))
-
-    def _apply_batch_norm(self, tables: list[np.ndarray], out_shape: tuple[int, ...], op: QDenseT):  # type: ignore[override]
-        if not op.enable_bn:
-            return
-
-        bn = op.bn_module
-        beta: np.ndarray = ops.convert_to_numpy(bn.beta) if bn.center else 0  # type: ignore
-        gamma: np.ndarray = ops.convert_to_numpy(bn.gamma) if bn.scale else 1  # type: ignore
-        m_mean: np.ndarray = ops.convert_to_numpy(bn.moving_mean)  # type: ignore
-        m_var: np.ndarray = ops.convert_to_numpy(bn.moving_variance)  # type: ignore
-        epsilon = bn.epsilon
-        scaler = gamma / np.sqrt(m_var + epsilon)
-        offset = beta - m_mean * scaler
-
-        for i in range(len(tables)):
-            tables[i][:] = (tables[i] * scaler[i % op.n_out] + offset[i % op.n_out]) / sqrt(op.n_in)
+        super().__init__(op)  # type: ignore[call-arg]
+        table = QEinsumDenseT(
+            '...i,ij->...j',
+            (op.n_out,),
+            n_hl=0,
+            batch_norm=op.enable_bn,
+            enable_iq=op.enable_iq,
+            enable_oq=False,
+            enable_ebops=False,
+            dtype=op.dtype,
+            **{f'bn_{word}': value for word, value in op.bn_args.items()},
+        )
+        # The sub-network was built on the layer's own input plus the column and table axes.
+        table.build(op.module.input_shape[:-2])  # type: ignore[reportOptionalSubscript]
+        with DotNotTrackScope():  # a built layer refuses new state, and every part grafted here is the dense's own
+            table.module, table._toq = op.module, op._toq
+            if op.enable_iq:
+                table._iq = op._iq
+            if op.enable_bn:
+                bn = op.bn_module
+                table.bn_gamma, table.bn_beta = bn.gamma, bn.beta
+                table.moving_mean, table.moving_variance = bn.moving_mean, bn.moving_variance
+        self.table = table
 
 
 class _QConvTable(_QDenseTable):
@@ -230,14 +142,15 @@ class _QConvTable(_QDenseTable):
     def call(self, inputs: FVArray) -> FVArray:
         op: QConvTBase = self.op  # type: ignore
         spatial = op.output_shape[1:-1]
+        read = super().call
         return apply_in_patches(
             inputs,
-            lambda window: self._tabulated(np.reshape(window, (1, *spatial, op.n_in))),  # type: ignore
+            lambda window: read(np.reshape(window, (1, *spatial, op.n_in))),  # type: ignore
             size=op.kernel_size,
             strides=op.strides,
             dilation=op.dilation_rate,
             padding=op.padding,
             data_format=op.data_format,
-            merge_kernel=spatial,
+            fused_tile=spatial,
             emits=(op.n_out,),
         )
