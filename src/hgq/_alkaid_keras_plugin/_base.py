@@ -12,9 +12,20 @@ from hgq.layers.core.base import MultipleQuantizers, Quantizer
 from hgq.quantizer.internal import FixedPointQuantizerBase
 
 
+def quantize_scaled(
+    v: FVArray, k, i, f, *, overflow_mode: str, round_mode: str, scaler: float | None, affine: tuple[float, float] | None
+) -> FVArray:
+    if scaler is not None:
+        v = v * (1.0 / scaler)
+    rq = quantize(v, k, i, f, overflow_mode=overflow_mode, round_mode=round_mode)
+    if scaler is not None:
+        rq = rq * scaler
+    if affine:
+        rq = rq * affine[0] + affine[1]
+    return rq
+
+
 def mirror_quantizer(q: Quantizer, v: FVArray) -> FVArray:
-    if q.scaler is not None:
-        v = v * (1.0 / q.scaler)
     qi: FixedPointQuantizerBase = q.quantizer
     kk, ki, kf = qi.kif
     shape = (1,) * max(1, len(kk.shape) - v.ndim) + tuple(v.shape)
@@ -22,10 +33,7 @@ def mirror_quantizer(q: Quantizer, v: FVArray) -> FVArray:
     ki = qi.bw_mapper.bw_to_x(ki, shape)
     kf = qi.bw_mapper.bw_to_x(kf, shape)
     k, i, f = (to_np_arr(x).astype(np.int8).reshape(v.shape) for x in (kk, ki, kf))
-    rq = quantize(v, k, i, f, overflow_mode=qi.overflow_mode, round_mode=qi.round_mode)
-    if q.affine:
-        rq = rq * q.affine[0] + q.affine[1]
-    return rq
+    return quantize_scaled(v, k, i, f, overflow_mode=qi.overflow_mode, round_mode=qi.round_mode, scaler=q.scaler, affine=q.affine)
 
 
 class QLayerMixin:

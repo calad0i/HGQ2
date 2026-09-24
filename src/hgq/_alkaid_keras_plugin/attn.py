@@ -3,13 +3,12 @@ from typing import cast
 import numpy as np
 from alkaid.converter.builtin.keras.layers import ReplayOperationBase
 from alkaid.trace import FVArray
-from alkaid.trace.ops import quantize
 
 from hgq.layers import QFSoftmax, QUnaryFunctionLUT
 from hgq.layers.attn import QLinformerAttention, QLinformerAttentionT, QMultiHeadAttention, QMultiHeadAttentionT, QSALTAttention
 from hgq.layers.core.base import Quantizer
 
-from ._base import mirror_quantizer, to_np_arr
+from ._base import mirror_quantizer, quantize_scaled, to_np_arr
 from .activation import _QFunctionLUT, _QSoftmax
 from .core import _QConv, _QDense
 from .table import _QEinsumDenseTable
@@ -39,13 +38,17 @@ class _QMHA(ReplayOperationBase):
                     else f'{quantizer.name} varies by query/key; shared precision needed. Set heterogeneous_axis=(1,).'
                 )
                 precisions.append(np.broadcast_to(precision[:, 0], (self.op._num_heads, lanes))[head])
-            return quantize(value, *precisions, overflow_mode=qi.overflow_mode, round_mode=qi.round_mode)
-        if quantizer.scaler is not None:
-            value = value * (1.0 / quantizer.scaler)
-        stated = (1, *value.shape[:axis], self.op._num_heads, *value.shape[axis:])
-        precisions = [to_np_arr(qi.bw_mapper.bw_to_x(bw, stated)).astype(np.int8)[0].take(head, axis=axis) for bw in qi.kif]
-        landed = quantize(value, *precisions, overflow_mode=qi.overflow_mode, round_mode=qi.round_mode)
-        return landed * quantizer.affine[0] + quantizer.affine[1] if quantizer.affine else landed
+        else:
+            stated = (1, *value.shape[:axis], self.op._num_heads, *value.shape[axis:])
+            precisions = [to_np_arr(qi.bw_mapper.bw_to_x(bw, stated)).astype(np.int8)[0].take(head, axis=axis) for bw in qi.kif]
+        return quantize_scaled(
+            value,
+            *precisions,
+            overflow_mode=qi.overflow_mode,
+            round_mode=qi.round_mode,
+            scaler=quantizer.scaler,
+            affine=quantizer.affine,
+        )
 
     def _table(self, table: QUnaryFunctionLUT, value, head: int):
         lanes = int(len(getattr(value, 'token_shape', value.shape)) < len(value.shape) or len(value.shape) == 1)
