@@ -146,6 +146,9 @@ class QDenseT(QLayerBaseSingleInput):
     def toq(self):
         return self._toq
 
+    def compute_output_shape(self, input_shape):
+        return tuple(input_shape[:-1]) + (self.n_out,)
+
     def get_config(self):
         config = {
             'n_out': self.n_out,

@@ -75,12 +75,11 @@ class QConvTBase(QDenseT):
             x = x[:, :, None]
         x = ops.image.extract_patches(x, **self.im2col_params)  # type: ignore
         if self.rank == 1:
-            x = x[:, :, 0]
+            x = x[:, :, 0]  # type: ignore
         return super().call(x, training=training)
 
-    def build(self, input_shape):
-        input_shape = tuple(input_shape)
-        output_shape = compute_conv_output_shape(
+    def compute_output_shape(self, input_shape):
+        return compute_conv_output_shape(
             input_shape,
             filters=self.n_out,
             kernel_size=self.kernel_size,
@@ -89,6 +88,10 @@ class QConvTBase(QDenseT):
             data_format=self.data_format,
             dilation_rate=self.dilation_rate,  # type: ignore
         )
+
+    def build(self, input_shape):
+        input_shape = tuple(input_shape)
+        output_shape = self.compute_output_shape(input_shape)
         ch_in = input_shape[-1]
         n_in = ch_in * prod(self.kernel_size)
         _dense_in_shape = output_shape[:-1] + (n_in,)
