@@ -1,10 +1,10 @@
 import numpy as np
 from keras import ops
 from keras.src import constraints, initializers, regularizers
-from keras.src.backend.config import epsilon
 from keras.src.layers.core.einsum_dense import _analyze_einsum_string
 
 from ..quantizer.config import QuantizerConfig
+from .core.dense import masked_moments
 from .core.einsum_dense import QEinsumDense
 
 
@@ -38,6 +38,7 @@ class QEinsumDenseBatchnorm(QEinsumDense):  # type: ignore
         beta_constraint=None,
         gamma_constraint=None,
         synchronized=False,
+        freeze_statistics=False,
         **kwargs,
     ):
         super().__init__(
@@ -57,6 +58,7 @@ class QEinsumDenseBatchnorm(QEinsumDense):  # type: ignore
             **kwargs,
         )
         self.synchronized = synchronized
+        self.freeze_statistics = bool(freeze_statistics)
         self.momentum = float(momentum)
         self.epsilon = float(epsilon)
         self.center = center
@@ -71,7 +73,7 @@ class QEinsumDenseBatchnorm(QEinsumDense):  # type: ignore
         self.gamma_regularizer = regularizers.get(gamma_regularizer)
         self.beta_constraint = constraints.get(beta_constraint)
         self.gamma_constraint = constraints.get(gamma_constraint)
-        self.supports_masking = False
+        self.supports_masking = True
 
         normalize_axes = normalize_axes or bias_axes
         assert normalize_axes is not None, 'Either normalize_axes or bias_axes must be provided.'
@@ -162,7 +164,7 @@ class QEinsumDenseBatchnorm(QEinsumDense):  # type: ignore
             bn_gamma = self.bn_gamma
         else:
             bn_gamma = 1
-        scaler = bn_gamma / ops.sqrt(var + epsilon())  # type: ignore
+        scaler = bn_gamma / ops.sqrt(var + self.epsilon)  # type: ignore
         kernel = self.kernel
         fused_kernel = ops.einsum(self.fused_kernel_equation, kernel, scaler)
         fused_qkernel = self.kq(fused_kernel, training=training)
@@ -182,18 +184,13 @@ class QEinsumDenseBatchnorm(QEinsumDense):  # type: ignore
         mean, var = self.moving_mean, self.moving_variance
         return self.get_fused_qkernel_and_qbias(training=False, mean=mean, var=var)[1]
 
-    def call(self, inputs, training=None):  # type: ignore
+    def call(self, inputs, training=None, mask=None):  # type: ignore
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
 
-        if training and self.trainable:
+        if training and self.trainable and not self.freeze_statistics:
             x = ops.einsum(self.equation, inputs, self.kernel)
-            mean, var = ops.moments(
-                x,
-                self._reduction_axes,
-                keepdims=False,
-                synchronized=self.synchronized,
-            )  # type: ignore
+            mean, var = masked_moments(x, self._reduction_axes, mask, self.synchronized)  # type: ignore
             self.moving_mean.assign(
                 self.moving_mean * self.momentum + mean * (1.0 - self.momentum),
             )
@@ -209,3 +206,26 @@ class QEinsumDenseBatchnorm(QEinsumDense):  # type: ignore
         if self.activation is not None:
             x = self.activation(x)
         return x
+
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                'normalize_axes': self.normalize_axes,
+                'momentum': self.momentum,
+                'epsilon': self.epsilon,
+                'center': self.center,
+                'scale': self.scale,
+                'synchronized': self.synchronized,
+                'freeze_statistics': self.freeze_statistics,
+                'beta_initializer': self.beta_initializer,
+                'gamma_initializer': self.gamma_initializer,
+                'moving_mean_initializer': self.moving_mean_initializer,
+                'moving_variance_initializer': self.moving_variance_initializer,
+                'beta_regularizer': self.beta_regularizer,
+                'gamma_regularizer': self.gamma_regularizer,
+                'beta_constraint': self.beta_constraint,
+                'gamma_constraint': self.gamma_constraint,
+            }
+        )
+        return config

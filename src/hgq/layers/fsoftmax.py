@@ -13,17 +13,23 @@ from .core import QLayerBase, QLayerBaseSingleInput
 from .softmax import QSoftmax
 
 
-def scan_rounds(fn: Callable, init, xs, variables):
+def scan_rounds(fn: Callable, init, xs, variables, mask=None):
     """Roughly equivalent to
     ```python
-    def scan_rounds(fn, init, xs):
+    def scan_rounds(fn, init, xs, mask):
         carry = init
-        for x in zip(*xs):
-            carry = fn(carry, x)
+        for x, keep in zip(zip(*xs), mask):
+            carry = where(keep, fn(carry, x), carry)
         return carry
     ```
-    compiled as one traced round.
+    compiled as one traced round; without a ``mask`` every round is kept.
     """
+
+    if mask is not None:
+        step, xs = fn, (*xs, mask)
+
+        def fn(carry, x):
+            return keras.tree.map_structure(lambda new, old: ops.where(x[-1], new, old), step(carry, x[:-1]), carry)
 
     reads = [(variable, variable.value) for variable in variables]
     with keras.StatelessScope(reads) as probe:
@@ -38,7 +44,11 @@ def scan_rounds(fn: Callable, init, xs, variables):
         return (carry, tuple(scope.get_current_value(variable) for variable in written)), None
 
     carry = (init, tuple(variable.value for variable in written))
-    if keras.backend.backend() != 'tensorflow':
+    if keras.backend.backend() == 'jax':
+        import jax
+
+        carry, _ = jax.lax.scan(jax.checkpoint(traced), carry, xs)
+    elif keras.backend.backend() != 'tensorflow':
         carry, _ = ops.scan(traced, carry, xs)  # type: ignore
     else:
         for i in range(int(xs[0].shape[0])):
@@ -92,7 +102,7 @@ class QFSoftmax(QSoftmax):
 
         self.exp_table._enable_ebops = False
         self.inv_table._enable_ebops = False
-        self.supports_masking = False
+        self.supports_masking = True
 
     @property
     def impl(self) -> Literal['1pass', '2pass']:
@@ -132,7 +142,7 @@ class QFSoftmax(QSoftmax):
         # QSoftmax shapes its exp table over the whole input; the scan reads one round of it at a time.
         QLayerBaseSingleInput.build(self, input_shape)
 
-    def call(self, inputs, training=None):  # type: ignore
+    def call(self, inputs, training=None, mask=None):  # type: ignore
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
 
@@ -155,7 +165,12 @@ class QFSoftmax(QSoftmax):
             )
             return m, l, o
 
-        m = ops.take(inputs, [0], axis=self.axis)
+        m, keep = ops.take(inputs, [0], axis=self.axis), None
+        if mask is not None:  # a masked position leaves the state, so the peak starts at the first unmasked one
+            mask = ops.cast(mask, 'bool')
+            first = ops.argmax(ops.cast(mask, 'int32'), axis=self.axis)
+            m = ops.take_along_axis(inputs, ops.expand_dims(first, self.axis), axis=self.axis)
+            keep = ops.expand_dims(ops.moveaxis(mask, self.axis, 0), self.axis + 1)
         if self.impl == '2pass':
 
             def stats(carry, xs):
@@ -166,13 +181,15 @@ class QFSoftmax(QSoftmax):
                 (m, ops.zeros_like(m)),
                 (ops.moveaxis(inputs, self.axis, 0),),
                 [*self.exp_table.variables, *self.lq.variables],
-            )
-            return self.exp_table(m - inputs, training=training) * self.inv_table(l, training=training)
+                keep,
+            )  # type: ignore
+            p = self.exp_table(m - inputs, training=training) * self.inv_table(l, training=training)
+            return p if mask is None else ops.where(mask, p, 0)
 
         init = (m, ops.zeros_like(m), ops.zeros_like(inputs))
         # The scan axis leads, so the round above is traced once and stands for all n of them.
         xs = (ops.moveaxis(inputs, self.axis, 0), ops.arange(self._lanes.size))
-        _, l, o = scan_rounds(round_, init, xs, [*self.exp_table.variables, *self.lq.variables, *self.aq.variables])
+        _, l, o = scan_rounds(round_, init, xs, [*self.exp_table.variables, *self.lq.variables, *self.aq.variables], keep)  # type: ignore
 
         return o * self.inv_table(l, training=training)
 

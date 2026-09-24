@@ -49,13 +49,15 @@ class QBatchNormalization(QLayerBaseSingleInput, BatchNormalization):
         beta_constraint=None,
         gamma_constraint=None,
         synchronized=False,
+        freeze_statistics=False,
         kq_conf: None | QuantizerConfig = None,
         iq_conf: None | QuantizerConfig = None,
         bq_conf: None | QuantizerConfig = None,
         **kwargs,
     ):
-        kwargs = gather_vars_to_kwargs('self|kq_conf|bq_conf')
+        kwargs = gather_vars_to_kwargs('self|kq_conf|bq_conf|freeze_statistics')
         super().__init__(**kwargs)
+        self.freeze_statistics = bool(freeze_statistics)
 
         kq_conf = kq_conf or QuantizerConfig('default', 'weight')
         self._kq = Quantizer(kq_conf, name=f'{self.name}_kq')
@@ -109,7 +111,7 @@ class QBatchNormalization(QLayerBaseSingleInput, BatchNormalization):
         if self.center:
             bn_beta = ops.cast(self.bn_beta, self.dtype)
         else:
-            bn_beta = 1
+            bn_beta = 0
 
         scale = bn_gamma / ops.sqrt(variance + self.epsilon)  # type: ignore
         offset = bn_beta - mean * scale  # type: ignore
@@ -141,7 +143,7 @@ class QBatchNormalization(QLayerBaseSingleInput, BatchNormalization):
         if self.center:
             bn_beta = ops.cast(self.bn_beta, ops.dtype(qinputs))
         else:
-            bn_beta = 1
+            bn_beta = 0
 
         scale = bn_gamma / ops.sqrt(variance + self.epsilon)  # type: ignore
         offset = bn_beta - mean * scale  # type: ignore
@@ -168,7 +170,7 @@ class QBatchNormalization(QLayerBaseSingleInput, BatchNormalization):
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
 
-        if training:
+        if training and self.trainable and not self.freeze_statistics:
             scale, offset = self._scaler_and_offset_train(inputs, mask)
         else:
             scale, offset = self._scaler_and_offset()
@@ -191,6 +193,7 @@ class QBatchNormalization(QLayerBaseSingleInput, BatchNormalization):
         config = super().get_config()
         config.update(
             {
+                'freeze_statistics': self.freeze_statistics,
                 'kq_conf': self.kq.config,
                 'bq_conf': self.bq.config,
             }
