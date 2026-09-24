@@ -1,10 +1,10 @@
 import math
 from collections.abc import Sized
 from copy import copy
-from typing import Literal, cast
+from typing import Literal
 
 import keras
-from keras import KerasTensor, ops
+from keras import ops
 from keras.initializers import Constant
 from keras.layers import Dropout, MultiHeadAttention
 from keras.saving import register_keras_serializable
@@ -611,68 +611,93 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         return attention_output
 
     def _online_attention(self, query, key, value, attention_mask=None, training=None):
-        """Scan max/weight and fold values in the same pass or in a second pass, as the softmax states."""
+        assert self._fuse == 'none', 'Streaming attention requires fuse=none'
+        softmax = self._softmax
+        scores = ops.einsum(self._dot_product_equation, key, query)
+        if attention_mask is None:
+            keep = ops.ones((ops.shape(scores)[0], 1, 1, scores.shape[-1]), dtype='bool')
+        else:
+            keep = ops.expand_dims(ops.cast(attention_mask, 'bool'), axis=1)
+        # Excluded pairs must not inflate the calibrated score/table ranges.
+        scores = softmax.iq(ops.where(keep, scores, 0.0), training=training)
+        first = ops.argmax(ops.cast(keep, 'int32'), axis=-1)
+        m = ops.take_along_axis(scores, ops.expand_dims(first, -1), axis=-1)
+        context = ops.zeros((*ops.shape(m)[:-1], self._value_dim), dtype=scores.dtype)
+        xs = (ops.moveaxis(scores, -1, 0), ops.moveaxis(value, 1, 0), ops.moveaxis(keep, -1, 0))
 
-        assert self._fuse == 'none', (
-            f"{self.name}: softmax='{self._softmax_kind}' streams key/value per token; set fuse='none' (got '{self._fuse}')."
-        )
-        assert attention_mask is None, (
-            f'{self.name} is configured to use online softmax (flash attention); attention_mask is not supported yet'
-        )
-        softmax: QFSoftmax = self._softmax
-
-        # [B, N, T, S]; the 1/sqrt(key_dim) the scores are read at rides in the exponential's own table.
-        scores = softmax.iq(cast(KerasTensor, ops.einsum(self._dot_product_equation, key, query)), training=training)
-        m = cast(KerasTensor, ops.take(scores, [0], axis=-1))  # the first score, so every round below is identical
-
-        def statistics(m, weight, score):
-            score = ops.expand_dims(score, axis=-1)  # [B, N, T, 1]
-            m, previous = cast(KerasTensor, ops.maximum(m, score)), m
-            rescale = softmax.exp_table(m - previous, training=training)  # EXP[m_prev - m], 1 on a quiet round
-            share = softmax.exp_table(m - score, training=training)
-            weight = softmax.lq(rescale * weight, training=training) + share
-            return m, weight, rescale, share
-
-        def round_(carry, xs):
-            m, weight, context = carry
-            score, served = xs
-            m, weight, rescale, share = statistics(m, weight, score)
-            served = ops.expand_dims(served, axis=-2)  # [B, N, 1, H]
-            context = softmax.aq(rescale * context, training=training) + softmax.aq(share * served, training=training)
-            return m, weight, context
-
-        context = ops.zeros((*ops.shape(m)[:-1], self._value_dim))  # type: ignore
-        xs = (ops.moveaxis(scores, -1, 0), ops.moveaxis(value, 1, 0))
         if softmax.impl == '2pass':
 
-            def stats(carry, xs):
-                return statistics(carry[0], carry[1], xs[0])[:2]
+            def statistics(carry, xs):
+                maximum, weight = carry
+                score, _, valid = xs
+                score, valid = ops.expand_dims(score, -1), ops.expand_dims(valid, -1)
+                next_max = ops.where(valid, ops.maximum(maximum, score), maximum)
+                rescale = softmax.exp_table(next_max - maximum, training=training)
+                difference = ops.where(valid, next_max - score, 0.0)
+                share = softmax.exp_table(difference, training=training)
+                next_weight = softmax.lq(ops.where(valid, rescale * weight, 0.0), training=training) + share
+                return next_max, ops.where(valid, next_weight, weight)
 
-            m, weight = scan_rounds(stats, (m, ops.zeros_like(m)), xs, [*softmax.exp_table.variables, *softmax.lq.variables])
+            maximum, weight = scan_rounds(
+                statistics,
+                (m, ops.zeros_like(m)),
+                xs,
+                [*softmax.exp_table.variables, *softmax.lq.variables],
+            )
 
             def accumulate(context, xs):
-                score, served = xs
-                share = softmax.exp_table(m - ops.expand_dims(score, -1), training=training)
-                probability = softmax.oq(share * softmax.inv_table(weight, training=training), training=training)
-                return softmax.aq(context, training=training) + softmax.aq(
+                score, served, valid = xs
+                score, valid = ops.expand_dims(score, -1), ops.expand_dims(valid, -1)
+                difference = ops.where(valid, maximum - score, 0.0)
+                share = softmax.exp_table(difference, training=training)
+                probability = softmax.oq(
+                    ops.where(valid, share * softmax.inv_table(weight, training=training), 0.0),
+                    training=training,
+                )
+                next_context = softmax.aq(ops.where(valid, context, 0.0), training=training) + softmax.aq(
                     probability * ops.expand_dims(served, -2), training=training
                 )
+                return ops.where(valid, next_context, context)
 
             context = scan_rounds(
                 accumulate,
                 context,
                 xs,
-                [*softmax.exp_table.variables, *softmax.inv_table.variables, *softmax.oq.variables, *softmax.aq.variables],
+                [
+                    *softmax.exp_table.variables,
+                    *softmax.inv_table.variables,
+                    *softmax.oq.variables,
+                    *softmax.aq.variables,
+                ],
             )
             return ops.transpose(context, (0, 2, 1, 3)), None
 
-        init = (m, ops.zeros_like(m), context)
-        _, weight, context = scan_rounds(
-            round_, init, xs, [*softmax.exp_table.variables, *softmax.lq.variables, *softmax.aq.variables]
-        )
+        def round_(carry, xs):
+            maximum, weight, context = carry
+            score, served, valid = xs
+            score = ops.expand_dims(score, -1)
+            valid = ops.expand_dims(valid, -1)
+            next_max = ops.where(valid, ops.maximum(maximum, score), maximum)
+            rescale = softmax.exp_table(next_max - maximum, training=training)
+            difference = ops.where(valid, next_max - score, 0.0)
+            share = softmax.exp_table(difference, training=training)
+            share = ops.where(valid, share, 0.0)
+            next_weight = softmax.lq(rescale * weight, training=training) + share
+            served = ops.where(valid, ops.expand_dims(served, -2), 0.0)
+            next_context = softmax.aq(rescale * context, training=training) + softmax.aq(share * served, training=training)
+            return (
+                next_max,
+                ops.where(valid, next_weight, weight),
+                ops.where(valid, next_context, context),
+            )
 
+        _, weight, context = scan_rounds(
+            round_,
+            (m, ops.zeros_like(m), context),
+            xs,
+            [*softmax.exp_table.variables, *softmax.lq.variables, *softmax.aq.variables],
+        )
         context = context * softmax.inv_table(weight, training=training)
-        # [B, N, T, H] is the scan's own layout; the output projection is [B, T, N, H].
         return ops.transpose(context, (0, 2, 1, 3)), None
 
     def _compute_attention(self, query, key, value, attention_mask=None, training=None):  # type: ignore

@@ -97,7 +97,7 @@ class _QMHA(ReplayOperationBase):
             scores = np.einsum(scored, key[..., h, :], query[..., h, :])
             if softmax.stable:
                 if mask is not None:
-                    scores = np.where(mask, scores, np.min(scores.lhs[0]) - 1)  # type: ignore
+                    scores = np.where(mask, scores, np.min(scores.lhs[0]))  # type: ignore
                 scores = np.amax(scores, axis=axes, keepdims=True) - scores  # type: ignore
             weights = self._table(softmax.exp_table, scores, h)
             if mask is not None:
@@ -109,7 +109,6 @@ class _QMHA(ReplayOperationBase):
 
     def _online_attention(self, op: QMultiHeadAttention, query, key, value, mask):
         assert op._fuse == 'none', f'{op.name}: fused qkv projection is not supported in flash attn impl'
-        assert mask is None, "Scan attention does not support masks; drop the mask or set softmax='comb'."
         softmax: QFSoftmax = op._softmax
         head = op._dot_product_equation.split(',')[1].split('->')[0][-2]
         scored = op._dot_product_equation.replace(head, '')
@@ -120,7 +119,8 @@ class _QMHA(ReplayOperationBase):
         for h in range(op._num_heads):
             scores = self._at_head(softmax.iq, np.einsum(scored, key[..., h, :], query[..., h, :]), h, lanes=1)
             lanes += [scores[..., None], np.broadcast_to(value[..., h, :][:, None], (*np.shape(scores), depth))]
-        arrival = named(np.concatenate(lanes, axis=-1), f'{op.name}_arrival')
+        bits = [] if mask is None else [np.broadcast_to(set_token_dim(mask[..., None], -1), (*np.shape(scores), 1))]
+        arrival = named(np.concatenate(lanes + bits, axis=-1), f'{op.name}_arrival')
 
         def statistics(score, running, weight, h):
             peak = np.maximum(running, score)
@@ -144,22 +144,24 @@ class _QMHA(ReplayOperationBase):
                         self._at_head(softmax.aq, rescale * output, h, lanes=depth)
                         + self._at_head(softmax.aq, share * served, h, lanes=depth)
                     )
-            return np.concatenate(lanes, axis=-1)
+            new = np.concatenate(lanes, axis=-1)
+            return new if mask is None else np.where(token[-1:], new, state)
 
         reach = sum(int(np.max(to_np_arr(dense.oq.quantizer.kif[1]))) for dense in (op._query_dense, op._key_dense))
         floor = -float(np.shape(query)[-1]) * 2.0**reach
-        sequence = named(np.concatenate(lanes[::2], axis=-1), f'{op.name}_scores') if softmax.impl == '2pass' else arrival
+        sequence = named(np.concatenate(lanes[::2] + bits, axis=-1), f'{op.name}_scores') if softmax.impl == '2pass' else arrival
         carried = affine_scan(cell, sequence, np.tile([floor, *np.zeros(carrying - 1)], op._num_heads), name=f'{op.name}_combine')
 
         if softmax.impl == '2pass':
             final = np.broadcast_to(carried[..., -1:, :], (*arrival.shape[:-1], 2 * op._num_heads))
+            width = np.shape(arrival)[-1]
 
             def accumulate(token, state):
                 outputs = []
                 for h in range(op._num_heads):
                     score = token[h * arriving : h * arriving + 1]
                     served = token[h * arriving + 1 : (h + 1) * arriving]
-                    offset = op._num_heads * arriving + 2 * h
+                    offset = width + 2 * h
                     peak, weight = token[offset : offset + 1], token[offset + 1 : offset + 2]
                     share = self._table(softmax.exp_table, peak - score, h)
                     probability = self._at_head(softmax.oq, share * self._table(softmax.inv_table, weight, h), h, lanes=1)
@@ -168,7 +170,8 @@ class _QMHA(ReplayOperationBase):
                         self._at_head(softmax.aq, output, h, lanes=depth)
                         + self._at_head(softmax.aq, probability * served, h, lanes=depth)
                     )
-                return np.concatenate(outputs)
+                new = np.concatenate(outputs)
+                return new if mask is None else np.where(token[width - 1 : width], new, state)
 
             carried = affine_scan(
                 accumulate,
@@ -225,7 +228,8 @@ class _QMHA(ReplayOperationBase):
             project = _QEinsumDenseTable if getattr(op, '_lin_kv_proj_mode', 'dense') == 'dense_t' else _QDense
             key = cast(FVArray, project(op._lin_k_proj)(key)['final'][0])
             value = cast(FVArray, project(op._lin_v_proj)(value)['final'][0])
-            key, value = set_token_dim(key, -1), set_token_dim(value, -1)
+            if op._softmax_kind != 'comb':
+                key, value = set_token_dim(key, -1), set_token_dim(value, -1)
         masks = []
         for mask, axis in ((query_mask, -1), (value_mask, -2), (key_mask, -2)):
             if mask is not None:
@@ -234,7 +238,9 @@ class _QMHA(ReplayOperationBase):
             masks.append(np.tril(np.ones((1, query.shape[1], value.shape[1]), dtype='uint8')))
         if attention_mask is not None:
             masks.append(attention_mask)
-        mask = np.prod(np.stack(masks), axis=0) if masks else None
+        while len(masks) > 1:
+            masks = [a * b for a, b in zip(masks[::2], masks[1::2])] + masks[len(masks) // 2 * 2 :]
+        mask = masks[0] if masks else None
         query, key, value = self._qkv(op, query, key, value)
 
         composed = self._online_attention if op._softmax_kind != 'comb' else self._matrix_attention

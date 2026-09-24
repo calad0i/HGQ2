@@ -9,6 +9,27 @@ from ...utils.misc import gather_vars_to_kwargs
 from .base import QLayerBaseSingleInput
 
 
+def masked_moments(inputs, axes, mask=None, synchronized=False):
+    """Reduce only valid positions; feature axes broadcast the supplied mask."""
+    if mask is None:
+        return ops.moments(inputs, axes, synchronized=synchronized)
+    if synchronized:
+        raise NotImplementedError('Synchronized masked normalization is not supported')
+    if len(mask.shape) >= len(inputs.shape):
+        raise ValueError(f'Mask must omit feature axes: {mask.shape=} vs {inputs.shape=}')
+    for actual, expected in zip(mask.shape, inputs.shape):
+        if actual is not None and expected is not None and actual not in (1, expected):
+            raise ValueError(f'Mask does not match input positions: {mask.shape=} vs {inputs.shape=}')
+    weight = ops.cast(mask, inputs.dtype)
+    while ops.ndim(weight) < ops.ndim(inputs):  # type: ignore
+        weight = weight[..., None]  # type: ignore
+    weight = ops.broadcast_to(weight, ops.shape(inputs))
+    count = ops.maximum(ops.sum(weight, axes, keepdims=True), 1)
+    mean = ops.sum(ops.where(weight != 0, inputs, 0), axes, keepdims=True) / count  # type: ignore
+    variance = ops.sum(ops.where(weight != 0, ops.square(inputs - mean), 0), axes, keepdims=True) / count  # type: ignore
+    return ops.squeeze(mean, axes), ops.squeeze(variance, axes)
+
+
 class QDense(QLayerBaseSingleInput, Dense):
     def __init__(
         self,
@@ -124,6 +145,7 @@ class QBatchNormDense(QDense):
         bn_gamma_regularizer=None,
         bn_gamma_constraint=None,
         synchronized=False,
+        freeze_statistics=False,
         kq_conf: None | QuantizerConfig = None,
         iq_conf: None | QuantizerConfig = None,
         bq_conf: None | QuantizerConfig = None,
@@ -156,6 +178,8 @@ class QBatchNormDense(QDense):
         self.bn_gamma_constraint = constraints.get(bn_gamma_constraint)
         self.epsilon = epsilon
         self.synchronized = synchronized
+        self.freeze_statistics = bool(freeze_statistics)
+        self.supports_masking = True
 
     def build(self, input_shape):
         super().build(input_shape)
@@ -203,12 +227,12 @@ class QBatchNormDense(QDense):
 
         return fused_qkernel, fused_qbias
 
-    def call(self, inputs, training=None):
+    def call(self, inputs, training=None, mask=None):
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
 
-        if training and self.trainable:
-            mean, var = ops.moments(inputs, self.reduction_axis, keepdims=False, synchronized=self.synchronized)  # type: ignore
+        if training and self.trainable and not self.freeze_statistics:
+            mean, var = masked_moments(inputs, self.reduction_axis, mask, self.synchronized)  # type: ignore
             self.moving_mean.assign(
                 self.moving_mean * self.momentum + mean * (1.0 - self.momentum),  # type: ignore
             )
@@ -243,6 +267,7 @@ class QBatchNormDense(QDense):
                 'bn_gamma_regularizer': self.bn_gamma_regularizer,
                 'bn_gamma_constraint': self.bn_gamma_constraint,
                 'synchronized': self.synchronized,
+                'freeze_statistics': self.freeze_statistics,
             }
         )
         return config

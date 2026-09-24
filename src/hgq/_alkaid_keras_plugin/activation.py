@@ -40,7 +40,7 @@ class _QSoftmax(QLayerMixin, ReplayOperationBase):
 
         if op.stable:
             if mask is not None:
-                low = np.min(inputs.lhs[0]) - 1
+                low = np.min(inputs.lhs[0])
                 inputs = np.where(mask, inputs, low)  # type: ignore
             inputs = np.amax(inputs, axis=op.axes, keepdims=True) - inputs  # type: ignore
 
@@ -59,11 +59,12 @@ class _QFSoftmax(QLayerMixin, ReplayOperationBase):
     __activation_handled__ = True
     handles = (QFSoftmax,)
 
-    def call(self, inputs: FVArray) -> FVArray:
+    def call(self, inputs: FVArray, mask: FVArray | None = None) -> FVArray:
         op: QFSoftmax = self.op  # type: ignore
         order = tuple(axis for axis in range(inputs.ndim) if axis != op.axis) + (op.axis,)
         with scope(inputs, 'arrival'):
             sequence = set_token_dim(np.transpose(inputs, order)[..., None], -1)
+        bits = [] if mask is None else [set_token_dim(np.transpose(mask, order)[..., None], -1)]
         exponential = _QFunctionLUT(op.exp_table)
 
         def statistics(token, peak, weight, seen):
@@ -78,26 +79,39 @@ class _QFSoftmax(QLayerMixin, ReplayOperationBase):
             seen = np.broadcast_to((np.arange(inputs.shape[op.axis]) != 0)[:, None], sequence.shape)
 
             def stats(token, state):
-                return np.concatenate(statistics(token[:1], state[:1], state[1:2], token[1:2])[:2])
+                if mask is None:
+                    return np.concatenate(statistics(token[:1], state[:1], state[1:2], token[1:2])[:2])
+                # Masked, an earlier kept round is not the position but a third lane the first kept round sets.
+                new = np.concatenate([*statistics(token[:1], state[:1], state[1:2], state[2:3])[:2], np.ones(1)])
+                return np.where(token[1:2], new, state)
 
-            carried = affine_scan(stats, np.concatenate([sequence, seen], axis=-1), np.zeros(2), name=op.name)
+            scanned = np.concatenate([sequence, *(bits or [seen])], axis=-1)
+            carried = affine_scan(stats, scanned, np.zeros(2 + len(bits)), name=op.name)
             configure(carried, parallel_firings=op.parallelization_factor)
-            final = np.broadcast_to(carried[..., -1:, :], (*sequence.shape[:-1], 2))
+            final = np.broadcast_to(carried[..., -1:, :2], (*sequence.shape[:-1], 2))
 
             def normalize(token):
-                return exponential(token[1:2] - token[:1])['final'][0] * _QFunctionLUT(op.inv_table)(token[2:3])['final'][0]
+                p = exponential(token[1:2] - token[:1])['final'][0] * _QFunctionLUT(op.inv_table)(token[2:3])['final'][0]
+                return p if mask is None else np.where(token[3:4], p, 0)
 
-            normalized = affine_scan(normalize, np.concatenate([sequence, final], axis=-1), None, name=f'{op.name}_normalize')
+            normalized = affine_scan(
+                normalize, np.concatenate([sequence, final, *bits], axis=-1), None, name=f'{op.name}_normalize'
+            )
             normalized = cut(normalized)
             configure(normalized, parallel_firings=op.parallelization_factor)
             return cast(FVArray, np.transpose(normalized[..., 0], np.argsort(order)))
 
         def cell(token, state):
-            peak, weight, rescale, share = statistics(token, state[:1], state[1:2], state[-1:])
+            peak, weight, rescale, share = statistics(token[:1], state[:1], state[1:2], state[-1:])
             held = mirror_quantizer(op.aq, rescale * state[3:-1])
-            return np.concatenate([peak, weight, held, mirror_quantizer(op.aq, share), np.ones(1)])
+            new = np.concatenate([peak, weight, held, mirror_quantizer(op.aq, share), np.ones(1)])
+            if mask is None:
+                return new
+            # The slots shift one lane a round, so a masked round still shifts, rescaling nothing, in an empty slot.
+            return np.where(token[1:2], new, np.concatenate([state[:2], state[3:-1], np.zeros(1), state[-1:]]))
 
-        carried = affine_scan(cell, sequence, np.zeros(inputs.shape[op.axis] + 3), name=op.name)
+        scanned = np.concatenate([sequence, *bits], axis=-1) if bits else sequence
+        carried = affine_scan(cell, scanned, np.zeros(inputs.shape[op.axis] + 3), name=op.name)
         configure(carried, parallel_firings=op.parallelization_factor)
         final = carried[..., -1, :]
         normalized = final[..., 2:-1] * _QFunctionLUT(op.inv_table)(final[..., 1:2])['final'][0]
