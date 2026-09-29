@@ -3,6 +3,7 @@ from typing import cast
 import numpy as np
 from alkaid.converter.builtin.keras.layers import ReplayOperationBase
 from alkaid.trace import FVArray
+from alkaid.trace.ops import Traced
 
 from hgq.layers import QFSoftmax, QUnaryFunctionLUT
 from hgq.layers.attn import QLinformerAttention, QLinformerAttentionT, QMultiHeadAttention, QMultiHeadAttentionT, QSALTAttention
@@ -14,7 +15,7 @@ from .core import _QConv, _QDense
 from .table import _QEinsumDenseTable
 
 try:
-    from alkaid.opsched.frontend import affine_scan, cut, named, set_token_dim
+    from alkaid.opsched.frontend import TraceError, affine_scan, cut, named, set_token_dim
 except ImportError:
     raise RuntimeError('alkaid>=0.9.0beta1 is required for this version of hgq2. Please upgrade alkaid or install hgq2<0.3.')
 
@@ -54,7 +55,7 @@ class _QMHA(ReplayOperationBase):
         lanes = int(len(getattr(value, 'token_shape', value.shape)) < len(value.shape) or len(value.shape) == 1)
         replay = _QFunctionLUT(table)
         replay.__input_quantizer_handled__ = replay.__output_quantizer_handled__ = True
-        value = self._at_head(table.iq, value, head, lanes=lanes)
+        value = self._at_head(table.iq, value, head, lanes=lanes) if table.enable_iq else value
         return self._at_head(table.oq, replay(value)['final'][0], head, lanes=lanes)
 
     def _qkv(self, op: QMultiHeadAttention, query: FVArray, key: FVArray, value: FVArray) -> tuple[FVArray, ...]:
@@ -97,12 +98,16 @@ class _QMHA(ReplayOperationBase):
             scores = np.einsum(scored, key[..., h, :], query[..., h, :])
             if softmax.stable:
                 if mask is not None:
+                    if isinstance(scores, Traced):
+                        raise TraceError(
+                            "a masked stable softmax='comb' attention does not schedule; use softmax='1pass' or '2pass'"
+                        )
                     scores = np.where(mask, scores, np.min(scores.lhs[0]))  # type: ignore
                 scores = np.amax(scores, axis=axes, keepdims=True) - scores  # type: ignore
             weights = self._table(softmax.exp_table, scores, h)
             if mask is not None:
                 weights = mask * weights
-            divisor = self._table(softmax.inv_table, np.sum(weights, axis=axes, keepdims=True), h)  # type: ignore
+            divisor = cut(self._table(softmax.inv_table, np.sum(weights, axis=axes, keepdims=True), h))  # type: ignore
             attends.append(self._at_head(softmax.oq, weights * divisor, h, 1))
             contexts.append(np.einsum(combined, attends[h], value[..., h, :]))
         return contexts, attends

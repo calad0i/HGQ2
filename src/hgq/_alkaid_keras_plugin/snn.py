@@ -21,17 +21,15 @@ class _QSNNReplay(QLayerMixin, _QRNNReplay):
         leaked = to_np_arr(cell.qlif_beta) * state if isinstance(cell, QLIFCell) else state  # type: ignore
         membrane = leaked + (mirror_quantizer(cell.iq, x) if cell.enable_iq else x)
         score = membrane - to_np_arr(cell.threshold)
-        over = lambda v: (v > 0) * 1.0
-        mapped = getattr(score, 'apply', None)
-        fired = quantize(over(score) if mapped is None else mapped(over), 0, 1, 0)
+        fired = quantize(score > 0, 0, 1, 0)  # type: ignore
 
         spikes = fired * to_np_arr(cell.qgraded_spikes_factor)
         if cell.enable_oq:
             spikes = mirror_quantizer(cell.oq, spikes)  # type: ignore
         if cell.reset_mechanism == 'subtract':
-            kept = membrane - fired * to_np_arr(cell.threshold)
+            kept = np.where(fired, score, membrane)
         elif cell.reset_mechanism == 'zero':
-            kept = membrane * (1.0 - fired)
+            kept = np.where(fired, 0.0, membrane)
         else:
             kept = membrane
         kept = mirror_quantizer(cell.sq, kept) if cell.enable_sq else kept  # type: ignore

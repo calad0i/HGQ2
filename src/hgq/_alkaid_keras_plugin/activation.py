@@ -4,13 +4,14 @@ import keras
 import numpy as np
 from alkaid.converter.builtin.keras.layers._base import ReplayOperationBase
 from alkaid.trace import FVArray
+from alkaid.trace.ops import Traced
 
 from hgq.layers import QAffinedUnaryFunctionLUT, QFSoftmax, QSoftmax, QUnaryFunctionLUT
 
 from ._base import QLayerMixin, mirror_quantizer
 
 try:
-    from alkaid.opsched.frontend import affine_scan, apply, configure, cut, scope, set_token_dim
+    from alkaid.opsched.frontend import TraceError, affine_scan, apply, configure, cut, scope, set_token_dim
 except ImportError:
     raise RuntimeError('alkaid>=0.9.0beta1 is required for this version of hgq2. Please upgrade alkaid or install hgq2<0.3.')
 
@@ -40,6 +41,8 @@ class _QSoftmax(QLayerMixin, ReplayOperationBase):
 
         if op.stable:
             if mask is not None:
+                if isinstance(inputs, Traced):
+                    raise TraceError('a masked stable QSoftmax does not schedule; use QFSoftmax, or stable=False')
                 low = np.min(inputs.lhs[0])
                 inputs = np.where(mask, inputs, low)  # type: ignore
             inputs = np.amax(inputs, axis=op.axes, keepdims=True) - inputs  # type: ignore
