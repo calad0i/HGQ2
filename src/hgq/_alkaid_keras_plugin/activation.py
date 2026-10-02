@@ -11,7 +11,7 @@ from hgq.layers import QAffinedUnaryFunctionLUT, QFSoftmax, QSoftmax, QUnaryFunc
 from ._base import QLayerMixin, mirror_quantizer
 
 try:
-    from alkaid.opsched.frontend import TraceError, affine_scan, apply, configure, cut, scope, set_token_dim
+    from alkaid.opsched.frontend import TraceError, affine_scan, apply, cut, scope, set_token_dim
 except ImportError:
     raise RuntimeError('alkaid>=0.9.0beta1 is required for this version of hgq2. Please upgrade alkaid or install hgq2<0.3.')
 
@@ -90,7 +90,6 @@ class _QFSoftmax(QLayerMixin, ReplayOperationBase):
 
             scanned = np.concatenate([sequence, *(bits or [seen])], axis=-1)
             carried = affine_scan(stats, scanned, np.zeros(2 + len(bits)), name=op.name)
-            configure(carried, parallel_firings=op.parallelization_factor)
             final = np.broadcast_to(carried[..., -1:, :2], (*sequence.shape[:-1], 2))
 
             def normalize(token):
@@ -101,7 +100,6 @@ class _QFSoftmax(QLayerMixin, ReplayOperationBase):
                 normalize, np.concatenate([sequence, final, *bits], axis=-1), None, name=f'{op.name}_normalize'
             )
             normalized = cut(normalized)
-            configure(normalized, parallel_firings=op.parallelization_factor)
             return cast(FVArray, np.transpose(normalized[..., 0], np.argsort(order)))
 
         def cell(token, state):
@@ -115,7 +113,6 @@ class _QFSoftmax(QLayerMixin, ReplayOperationBase):
 
         scanned = np.concatenate([sequence, *bits], axis=-1) if bits else sequence
         carried = affine_scan(cell, scanned, np.zeros(inputs.shape[op.axis] + 3), name=op.name)
-        configure(carried, parallel_firings=op.parallelization_factor)
         final = carried[..., -1, :]
         normalized = final[..., 2:-1] * _QFunctionLUT(op.inv_table)(final[..., 1:2])['final'][0]
         return cast(FVArray, np.transpose(normalized, np.argsort(order)))
