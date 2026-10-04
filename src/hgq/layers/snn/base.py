@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from warnings import warn
 
 import numpy as np
@@ -29,11 +30,15 @@ class ATan:
         alpha = ops.cast(self.alpha, dtype)
         pi = ops.cast(np.pi, dtype)
         hard = ops.cast(inputs > 0, dtype)
-        soft = ops.arctan(pi / 2.0 * alpha * inputs) / pi + 0.5
+        soft = ops.arctan(pi / 2.0 * alpha * inputs) / pi + 0.5  # type: ignore
         return ops.stop_gradient(hard - soft) + soft
 
     def get_config(self):
         return {'alpha': self.alpha}
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
 
 
 def atan(alpha: float = 2.0):
@@ -130,7 +135,7 @@ class SpikingNeuralCell(Layer):
         spk = self.spike_grad(mem - self.threshold)
         if self.inhibition:
             index = ops.argmax(mem - self.threshold, axis=1)
-            spk = spk * ops.one_hot(index, self.units, dtype=ops.dtype(spk))
+            spk = spk * ops.one_hot(index, self.units, dtype=ops.dtype(spk))  # type:ignore
         return spk * self.graded_spikes_factor, spk
 
     def reset(self, mem, spk):
@@ -138,7 +143,7 @@ class SpikingNeuralCell(Layer):
         if self.reset_mechanism == 'subtract':
             return mem - reset * self.threshold
         if self.reset_mechanism == 'zero':
-            return mem * (1 - reset)
+            return mem * (1 - reset)  # type:ignore
         return mem
 
     def call(self, inputs, states, training=None):
@@ -254,6 +259,18 @@ class LIFCell(SpikingNeuralCell):
         return config
 
 
+def csd_count(x: float) -> int:
+    n = int(math.ldexp(math.frexp(x)[0], 53))
+    count = 0
+    while n:
+        if n % 2:
+            digit = 2 - n % 4
+            n -= digit
+            count += 1
+        n //= 2
+    return count
+
+
 class QSimpleSNNCell(QLayerBaseSingleInput, SpikingNeuralCell):
     """Quantization-aware integrate-and-fire RNN cell.
 
@@ -308,10 +325,11 @@ class QSimpleSNNCell(QLayerBaseSingleInput, SpikingNeuralCell):
             ebops_factor=ebops_factor,
             **kwargs,
         )
-        self._graded_spikes_factor_q = Quantizer(
-            graded_spikes_factor_q_conf or QuantizerConfig('default', 'weight'),
-            name=f'{self.name}_graded_spikes_factor_q',
-        )
+        if learn_graded_spikes_factor:
+            self._graded_spikes_factor_q = Quantizer(
+                graded_spikes_factor_q_conf or QuantizerConfig('default', 'weight'),
+                name=f'{self.name}_graded_spikes_factor_q',
+            )
         self._enable_sq = enable_sq if enable_sq is not None else global_config['enable_sq']
         if self.enable_sq:
             self._sq = Quantizer(sq_conf or QuantizerConfig(place='datalane'), name=f'{self.name}_sq')
@@ -330,10 +348,14 @@ class QSimpleSNNCell(QLayerBaseSingleInput, SpikingNeuralCell):
 
     @property
     def graded_spikes_factor_q(self):
+        if not self.learn_graded_spikes_factor:
+            raise ValueError('A constant graded spike factor has no quantizer.')
         return self._graded_spikes_factor_q
 
     @property
     def qgraded_spikes_factor(self):
+        if not self.learn_graded_spikes_factor:
+            return self.graded_spikes_factor
         return self.graded_spikes_factor_q(self.graded_spikes_factor)
 
     @property
@@ -350,7 +372,8 @@ class QSimpleSNNCell(QLayerBaseSingleInput, SpikingNeuralCell):
         super().build(input_shape)
         if self.enable_sq and not self.sq.built:
             self.sq.build((input_shape[0], self.units))
-        self.graded_spikes_factor_q.build(self.graded_spikes_factor.shape)
+        if self.learn_graded_spikes_factor:
+            self.graded_spikes_factor_q.build(self.graded_spikes_factor.shape)
         if self.enable_oq and not self.oq.built:
             self.oq.build((input_shape[0], self.units))
 
@@ -358,7 +381,7 @@ class QSimpleSNNCell(QLayerBaseSingleInput, SpikingNeuralCell):
         spk = self.spike_grad(mem - self.threshold)
         if self.inhibition:
             index = ops.argmax(mem - self.threshold, axis=1)
-            spk = spk * ops.one_hot(index, self.units, dtype=ops.dtype(spk))
+            spk = spk * ops.one_hot(index, self.units, dtype=ops.dtype(spk))  # type:ignore
         return spk * self.qgraded_spikes_factor, spk
 
     def reset(self, mem, spk):
@@ -366,7 +389,7 @@ class QSimpleSNNCell(QLayerBaseSingleInput, SpikingNeuralCell):
         if self.reset_mechanism == 'subtract':
             return mem - reset * self.threshold
         if self.reset_mechanism == 'zero':
-            return mem * (1 - reset)
+            return mem * (1 - reset)  # type:ignore
         return mem
 
     def _quantize_input(self, inputs, training):
@@ -381,22 +404,24 @@ class QSimpleSNNCell(QLayerBaseSingleInput, SpikingNeuralCell):
     def _accumulator_bits(self, shape):
         if self.enable_sq:
             return self.sq.bits_(shape)
-        if self.enable_iq:
-            bits = self.iq.bits_(shape)
         else:
-            bits = ops.ones(shape, dtype=self.dtype)
+            bits = ops.ones(shape, dtype=self.dtype) * 8
         extra = int(np.ceil(np.log2(max(self._ebops_sequence_length, 1))))
-        return bits + extra
+        return bits + extra  # type: ignore
 
     def _graded_spikes_factor_bits(self, shape):
-        return ops.broadcast_to(self.graded_spikes_factor_q.bits_(self.graded_spikes_factor.shape), shape)
+        if self.learn_graded_spikes_factor:
+            bits = self.graded_spikes_factor_q.bits_(self.graded_spikes_factor.shape)
+        else:
+            bits = np.float32(csd_count(self._graded_spikes_factor_init) - 1)
+        return ops.broadcast_to(bits, shape)
 
     @staticmethod
     def _add_ebops(bits0, bits1):
-        return ops.sum(bits0 + bits1 - ops.minimum(bits0, bits1)) * 0.65
+        return ops.sum(bits0 + bits1 - ops.minimum(bits0, bits1)) * 0.65  # type: ignore
 
     def _fire_reset_ebops(self, shape, mem_bits):
-        ebops = ops.sum(mem_bits) * 0.65
+        ebops = ops.sum(mem_bits) * 0.65  # type: ignore
         pulse_bits = ops.ones(shape, dtype=self.dtype)
         ebops = ebops + ops.sum(pulse_bits * self._graded_spikes_factor_bits(shape))  # type: ignore
         if self.reset_mechanism == 'subtract':
@@ -424,7 +449,7 @@ class QSimpleSNNCell(QLayerBaseSingleInput, SpikingNeuralCell):
         config = super().get_config()
         config.update(
             {
-                'graded_spikes_factor_q_conf': self.graded_spikes_factor_q.config,
+                'graded_spikes_factor_q_conf': self.graded_spikes_factor_q.config if self.learn_graded_spikes_factor else None,
                 'sq_conf': self.sq.config if self.enable_sq else None,
                 'enable_sq': self.enable_sq,
                 'standalone': self.standalone,
@@ -530,7 +555,7 @@ class QLIFCell(QSimpleSNNCell):
         input_bits = self.iq.bits_(shape)
         mem_bits = self._accumulator_bits(shape)
         beta_bits = ops.broadcast_to(self.beta_q.bits_(self.lif_beta.shape), shape)
-        ebops = ops.sum(mem_bits * beta_bits)
+        ebops = ops.sum(mem_bits * beta_bits)  # type: ignore
         ebops = ebops + self._add_ebops(mem_bits, input_bits)  # type: ignore
         return ebops + self._fire_reset_ebops(shape, mem_bits)  # type: ignore
 
@@ -577,7 +602,9 @@ class _QSNN(QRNN):
                 'sq_conf': self.cell.sq.config if self.cell.enable_sq else None,
                 'oq_conf': self.cell.oq.config if self.cell.enable_oq else None,
                 'enable_sq': self.cell.enable_sq,
-                'graded_spikes_factor_q_conf': self.cell.graded_spikes_factor_q.config,
+                'graded_spikes_factor_q_conf': self.cell.graded_spikes_factor_q.config
+                if self.cell.learn_graded_spikes_factor
+                else None,
             }
         )
         return config
