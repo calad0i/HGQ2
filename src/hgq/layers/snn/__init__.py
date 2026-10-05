@@ -8,6 +8,7 @@ from .base import (
     SpikingNeuralCell,
     atan,
 )
+from .mha import QLIFMHA
 
 __all__ = [
     'ATan',
@@ -18,4 +19,5 @@ __all__ = [
     'QLIFCell',
     'QSimpleSNN',
     'QLIF',
+    'QLIFMHA',
 ]

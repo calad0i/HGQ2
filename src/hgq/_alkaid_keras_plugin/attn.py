@@ -58,12 +58,12 @@ class _QMHA(ReplayOperationBase):
         value = self._at_head(table.iq, value, head, lanes=lanes) if table.enable_iq else value
         return self._at_head(table.oq, replay(value)['final'][0], head, lanes=lanes)
 
-    def _qkv(self, op: QMultiHeadAttention, query: FVArray, key: FVArray, value: FVArray) -> tuple[FVArray, ...]:
+    def _qkv(self, op: QMultiHeadAttention, query: FVArray, key: FVArray, value: FVArray, fuse: str) -> tuple[FVArray, ...]:
         denses = (op._query_dense, op._key_dense, op._value_dense)
-        if op._fuse == 'qkv':
+        if fuse == 'qkv':
             assert query is key and key is value, 'Fused QKV projection only works when query, key and value are the same.'
             groups = [((0, 1, 2), query, 'qkv')]
-        elif op._fuse == 'kv':
+        elif fuse == 'kv':
             assert key is value, 'Fused KV projection only works when key and value are the same.'
             groups = [((1, 2), key, 'kv'), ((0,), query, 'query')]
         else:
@@ -81,7 +81,8 @@ class _QMHA(ReplayOperationBase):
                 np.einsum(dense.equation, inputs, np.concatenate(kernels, axis=-1)) + np.concatenate(biases, axis=-1),
                 f'{op.name}_{name}',
             )
-            parts = np.split(projected, len(indices), axis=-1) if len(indices) > 1 else [projected]
+            bounds = np.cumsum([0] + [kernel.shape[-1] for kernel in kernels])
+            parts = [projected[..., start:stop] for start, stop in zip(bounds[:-1], bounds[1:])]
             for i, part in zip(indices, parts):
                 part = cast(FVArray, part)
                 outputs[i] = mirror_quantizer(denses[i].oq, part) if denses[i].enable_oq else part
@@ -246,7 +247,7 @@ class _QMHA(ReplayOperationBase):
         while len(masks) > 1:
             masks = [a * b for a, b in zip(masks[::2], masks[1::2])] + masks[len(masks) // 2 * 2 :]
         mask = masks[0] if masks else None
-        query, key, value = self._qkv(op, query, key, value)
+        query, key, value = self._qkv(op, query, key, value, op._fuse)
 
         composed = self._online_attention if op._softmax_kind != 'comb' else self._matrix_attention
         contexts, attends = composed(op, query, key, value, mask)
@@ -263,7 +264,7 @@ class _QMHA(ReplayOperationBase):
 class _QMHAT(_QMHA):
     handles = (QMultiHeadAttentionT, QLinformerAttentionT)
 
-    def _qkv(self, op: QMultiHeadAttentionT, query, key, value):
+    def _qkv(self, op: QMultiHeadAttentionT, query, key, value, fuse: str):
         denses = (op._query_dense, op._key_dense, op._value_dense)
         return tuple(_QEinsumDenseTable(dense)(x)['final'][0] for dense, x in zip(denses, (query, key, value)))
 

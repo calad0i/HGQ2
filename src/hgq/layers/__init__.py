@@ -45,7 +45,7 @@ from .pooling import (
     QMaxPooling3D as QMaxPool3D,
 )
 from .rnn import QGRU, QSimpleRNN
-from .snn import QLIF, QLIFCell, QSimpleSNN, QSimpleSNNCell
+from .snn import QLIF, QLIFMHA, QLIFCell, QSimpleSNN, QSimpleSNNCell
 from .softmax import QSoftmax
 from .table import QConvT1D, QConvT2D, QDenseT, QEinsumDenseT
 
@@ -109,6 +109,7 @@ __all__ = [
     'QLIFCell',
     'QSimpleSNN',
     'QLIF',
+    'QLIFMHA',
     'QDenseT',
     'QEinsumDenseT',
     'QConvT1D',
