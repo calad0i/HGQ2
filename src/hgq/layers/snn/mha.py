@@ -6,6 +6,7 @@ from keras import ops
 
 from ...quantizer.config import QuantizerConfig
 from ...utils.misc import gather_vars_to_kwargs
+from ..attn.mha import _stream_proj
 from ..core.base import QLayerBaseSingleInput
 from ..core.einsum_dense import QEinsumDense
 from .base import QLIF, csd_count
@@ -35,6 +36,8 @@ class LIFConfig(TypedDict, total=False):
 class QLIFMHA(QLayerBaseSingleInput):
     """Quantized spiking self-attention in the style of Spikformer (Zhou et al., ICLR 2023).
 
+    A Keras mask of shape ``(B, S)`` marks the padded tokens of variable-length sequences.
+
     Parameters
     ----------
     num_heads : int
@@ -56,6 +59,8 @@ class QLIFMHA(QLayerBaseSingleInput):
         Bias quantizer config of the four projections.
     out_proj_iq_conf : QuantizerConfig, optional
         Input quantizer config of output dense.
+    target_ii : int, optional
+        Initiation interval of a design that streams the sequence.
     """
 
     def __init__(
@@ -75,18 +80,24 @@ class QLIFMHA(QLayerBaseSingleInput):
         enable_oq: bool | None = None,
         enable_ebops: bool | None = None,
         beta0: float | None = None,
+        target_ii: int | None = None,
         **kwargs,
     ):
+        if target_ii is not None and target_ii < 1:
+            raise ValueError('target_ii must be positive.')
         if scale is None:
             scale = 2.0 ** -math.floor(math.log2(key_dim) / 2 + 0.5)
         if not (scale > 0 and 2.0 ** round(math.log2(scale)) == scale):
             raise ValueError(f'scale must be a power of two to be exact in fixed point, got {scale}.')
-        kwargs = gather_vars_to_kwargs('self|num_heads|key_dim|value_dim|scale|use_bias|lif_config|qkvo_.+|out_proj_iq_conf')
+        kwargs = gather_vars_to_kwargs(
+            'self|num_heads|key_dim|value_dim|scale|use_bias|lif_config|qkvo_.+|out_proj_iq_conf|target_ii'
+        )
         self._num_heads = num_heads
         self._key_dim = key_dim
         self._value_dim = key_dim if value_dim is None else value_dim
         self._scale = scale
         self._use_bias = use_bias
+        self._target_ii = target_ii
         self._lif_config = {
             'iq_conf': QuantizerConfig('default', 'datalane'),
             'sq_conf': QuantizerConfig(place='datalane'),
@@ -97,6 +108,7 @@ class QLIFMHA(QLayerBaseSingleInput):
         self._qkvo_bq_conf = qkvo_bq_conf or QuantizerConfig(place='bias')
         self._out_proj_iq_conf = out_proj_iq_conf or QuantizerConfig(place='datalane')
         super().__init__(**kwargs)
+        self.supports_masking = True
 
         self._query_lif = self._make_lif('query_lif', num_heads * key_dim)
         self._key_lif = self._make_lif('key_lif', num_heads * key_dim)
@@ -117,6 +129,10 @@ class QLIFMHA(QLayerBaseSingleInput):
     @property
     def scale(self):
         return self._scale
+
+    @property
+    def target_ii(self) -> int | None:
+        return self._target_ii
 
     def _sublayer_kwargs(self):
         return {'enable_ebops': self.enable_ebops, 'beta0': self._beta0.clone(), 'dtype': self.dtype_policy}
@@ -142,6 +158,7 @@ class QLIFMHA(QLayerBaseSingleInput):
         super().build(input_shape)
         _, seq, features = input_shape
         heads, key_dim, value_dim = self._num_heads, self._key_dim, self._value_dim
+        self._parallel_tokens = seq if self._target_ii is None else math.ceil(seq / self._target_ii)
 
         # The projections share the layer's input quantizer, and each QLIF's input quantizer quantizes its projection.
         self._query_dense = self._make_projection('query', 'abc,cde->abde', (seq, heads, key_dim), 'de', enable_iq=False)
@@ -154,6 +171,8 @@ class QLIFMHA(QLayerBaseSingleInput):
             dense.build(input_shape)
 
         for lif in (self._query_lif, self._key_lif, self._value_lif):
+            if lif.parallelization_factor < 0:
+                lif.parallelization_factor = self._parallel_tokens
             lif.build((None, seq, lif.cell.units))
 
         # QLayerBase applies oq after call, so the output projection has no output quantizer of its own.
@@ -161,6 +180,11 @@ class QLIFMHA(QLayerBaseSingleInput):
             'attention_output', 'abcd,cde->abe', (seq, features), 'e', enable_iq=True, iq_conf=self._out_proj_iq_conf
         )
         self._output_dense.build((None, seq, heads, value_dim))
+
+        if self._target_ii is not None:
+            projections = (self._query_dense, self._key_dense, self._value_dense, self._output_dense)
+            for dense, contraction in zip(projections, (features, features, features, value_dim)):
+                _stream_proj(dense, self._target_ii, (seq,), contraction)
 
     def compute_output_shape(self, input_shape):
         return input_shape
@@ -173,11 +197,13 @@ class QLIFMHA(QLayerBaseSingleInput):
         return ops.reshape(spikes, (-1, seq, heads, dim))
 
     def call(self, inputs, mask=None, training=None):
-        if mask is not None:
-            raise ValueError(f'{self.name}: QLIFMHA does not support masks.')
         query = self._spike_train(self._query_dense, self._query_lif, inputs, training)
         key = self._spike_train(self._key_dense, self._key_lif, inputs, training)
         value = self._spike_train(self._value_dense, self._value_lif, inputs, training)
+        if mask is not None:
+            # zeroing padded tokens
+            valid = ops.cast(mask, query.dtype)[:, :, None, None]  # type: ignore
+            query, key = query * valid, key * valid
 
         memory = ops.einsum('bsnk,bsnv->bnkv', key, value)
         context = ops.einsum('bsnk,bnkv->bsnv', query, memory) * self._scale  # type: ignore
@@ -195,9 +221,10 @@ class QLIFMHA(QLayerBaseSingleInput):
         else:
             gain_bits = csd_count(self._scale * math.prod(cell._graded_spikes_factor_init for cell in cells)) - 1
 
-        ebops_count = seq * heads * key_dim * value_dim  # 1b x 1b
-        ebops_context = seq * heads * key_dim * value_dim * count_bits  # 1b x count products
-        ebops_gain = seq * heads * value_dim * context_bits * gain_bits
+        tokens = self._parallel_tokens
+        ebops_count = tokens * heads * key_dim * value_dim  # 1b x 1b
+        ebops_context = tokens * heads * key_dim * value_dim * count_bits  # 1b x count products
+        ebops_gain = tokens * heads * value_dim * context_bits * gain_bits
         return ebops_count + ebops_context + ebops_gain  # type: ignore
 
     @property
@@ -231,6 +258,7 @@ class QLIFMHA(QLayerBaseSingleInput):
                 'qkvo_kq_conf': self._qkvo_kq_conf,
                 'qkvo_bq_conf': self._qkvo_bq_conf,
                 'out_proj_iq_conf': self._out_proj_iq_conf,
+                'target_ii': self._target_ii,
             }
         )
         return config

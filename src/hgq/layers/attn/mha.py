@@ -27,6 +27,21 @@ except ImportError:
         return max(1, target // math.prod(shape)), 0
 
 
+def _stream_proj(dense: QEinsumDense, target_ii: int, extents: tuple[int, ...], contraction: int):
+    """Price a built projection for a design that covers its firings over ``extents`` at ``target_ii``, as alkaid
+    schedules it, by setting its parallelization and EBOPs factors."""
+    cycles, copies = _cover_firings(target_ii, extents)
+    budget = min(contraction, cycles)
+    if dense.n_parallel == 1:
+        budget = 1
+    unroll = math.ceil(contraction / budget)
+    steps = math.ceil(contraction / unroll)
+    workers = math.ceil(dense.n_parallel / (target_ii // steps))
+    dense.parallelization_factor = copies if copies and steps > 1 else workers
+    # fraction of the contraction a serial step in parallel
+    dense.ebops_factor = unroll / contraction
+
+
 def _get_output_shape(output_rank, known_last_dims, input_shape):
     n = output_rank - len(known_last_dims)
     return list(input_shape[1 : n + 1]) + list(known_last_dims)
@@ -293,16 +308,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 terms = (query_shape[-1], key_shape[-1], value_shape[-1], self._value_dim)
                 spans = (query_shape[1:-1], key_shape[1:-1], value_shape[1:-1], query_shape[1:-1])
                 for dense, extents, contraction in zip(denses, spans, terms):
-                    cycles, copies = _cover_firings(self.target_ii, extents)
-                    budget = min(contraction, cycles)
-                    if dense.n_parallel == 1:
-                        budget = 1
-                    unroll = math.ceil(contraction / budget)
-                    steps = math.ceil(contraction / unroll)
-                    workers = math.ceil(dense.n_parallel / (self.target_ii // steps))
-                    dense.parallelization_factor = copies if copies and steps > 1 else workers
-                    # fraction of the contraction a serial step in parallel
-                    dense.ebops_factor = unroll / contraction
+                    _stream_proj(dense, self.target_ii, extents, contraction)
                 self._softmax.parallelization_factor = math.ceil(self.n_parallel * value_shape[1] / self.target_ii)
         self.built = True
 
@@ -615,14 +621,14 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         softmax = self._softmax
         scores = ops.einsum(self._dot_product_equation, key, query)
         if attention_mask is None:
-            keep = ops.ones((ops.shape(scores)[0], 1, 1, scores.shape[-1]), dtype='bool')
+            keep = ops.ones((ops.shape(scores)[0], 1, 1, scores.shape[-1]), dtype='bool')  # type: ignore
         else:
             keep = ops.expand_dims(ops.cast(attention_mask, 'bool'), axis=1)
         # Excluded pairs must not inflate the calibrated score/table ranges.
         scores = softmax.iq(ops.where(keep, scores, 0.0), training=training)
         first = ops.argmax(ops.cast(keep, 'int32'), axis=-1)
         m = ops.take_along_axis(scores, ops.expand_dims(first, -1), axis=-1)
-        context = ops.zeros((*ops.shape(m)[:-1], self._value_dim), dtype=scores.dtype)
+        context = ops.zeros((*ops.shape(m)[:-1], self._value_dim), dtype=scores.dtype)  # type: ignore
         xs = (ops.moveaxis(scores, -1, 0), ops.moveaxis(value, 1, 0), ops.moveaxis(keep, -1, 0))
 
         if softmax.impl == '2pass':
@@ -633,12 +639,12 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 score, valid = ops.expand_dims(score, -1), ops.expand_dims(valid, -1)
                 next_max = ops.where(valid, ops.maximum(maximum, score), maximum)
                 rescale = softmax.exp_table(next_max - maximum, training=training)
-                difference = ops.where(valid, next_max - score, 0.0)
+                difference = ops.where(valid, next_max - score, 0.0)  # type: ignore
                 share = softmax.exp_table(difference, training=training)
                 next_weight = softmax.lq(ops.where(valid, rescale * weight, 0.0), training=training) + share
                 return next_max, ops.where(valid, next_weight, weight)
 
-            maximum, weight = scan_rounds(
+            maximum, weight = scan_rounds(  # type: ignore
                 statistics,
                 (m, ops.zeros_like(m)),
                 xs,
@@ -679,19 +685,19 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             valid = ops.expand_dims(valid, -1)
             next_max = ops.where(valid, ops.maximum(maximum, score), maximum)
             rescale = softmax.exp_table(next_max - maximum, training=training)
-            difference = ops.where(valid, next_max - score, 0.0)
+            difference = ops.where(valid, next_max - score, 0.0)  # type: ignore
             share = softmax.exp_table(difference, training=training)
             share = ops.where(valid, share, 0.0)
             next_weight = softmax.lq(rescale * weight, training=training) + share
             served = ops.where(valid, ops.expand_dims(served, -2), 0.0)
-            next_context = softmax.aq(rescale * context, training=training) + softmax.aq(share * served, training=training)
+            next_context = softmax.aq(rescale * context, training=training) + softmax.aq(share * served, training=training)  # type: ignore
             return (
                 next_max,
                 ops.where(valid, next_weight, weight),
                 ops.where(valid, next_context, context),
             )
 
-        _, weight, context = scan_rounds(
+        _, weight, context = scan_rounds(  # type: ignore
             round_,
             (m, ops.zeros_like(m), context),
             xs,
