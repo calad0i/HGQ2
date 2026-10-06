@@ -1,4 +1,4 @@
-from math import prod
+from math import ceil, prod
 
 from keras import ops
 from keras.layers import (
@@ -198,8 +198,12 @@ class QGlobalAveragePooling1D(QBasePooling, GlobalAveragePooling1D):  # type: ig
         keepdims=False,
         iq_conf: QuantizerConfig | None = None,
         oq_conf: QuantizerConfig | None = None,
+        target_ii: int | None = None,
         **kwargs,
     ):
+        if target_ii is not None and target_ii < 1:
+            raise ValueError('target_ii must be positive.')
+        self._target_ii = target_ii
         super().__init__(
             data_format=data_format,
             keepdims=keepdims,
@@ -207,6 +211,22 @@ class QGlobalAveragePooling1D(QBasePooling, GlobalAveragePooling1D):  # type: ig
             oq_conf=oq_conf,
             **kwargs,
         )
+
+    @property
+    def target_ii(self) -> int | None:
+        return self._target_ii
+
+    def _compute_ebops(self, shape):
+        ebops = super()._compute_ebops(shape)
+        if self.target_ii is None:
+            return ebops
+        steps = shape[1] if self.data_format == 'channels_last' else shape[2]
+        return ebops * ceil(steps / self.target_ii) / steps  # type: ignore
+
+    def get_config(self):
+        config = super().get_config()
+        config['target_ii'] = self._target_ii
+        return config
 
 
 class QGlobalAveragePooling2D(QBasePooling, GlobalAveragePooling2D):

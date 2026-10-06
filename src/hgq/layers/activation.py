@@ -1,3 +1,4 @@
+import math
 from collections.abc import Callable
 
 from keras import KerasTensor, ops
@@ -32,13 +33,17 @@ class QUnaryFunctionLUT(Activation, QLayerBaseSingleInput):
         allow_heterogeneous_input: bool = True,
         allow_heterogeneous_table: bool = True,
         override_oq_k0_to_0: bool = False,
+        target_ii: int | None = None,
         **kwargs,
     ):
         act_name = activation.__name__ if isinstance(activation, Callable) else activation
         assert act_name not in ('softmax', 'log_softmax'), f'activation {act_name} is not unary'
+        if target_ii is not None and target_ii < 1:
+            raise ValueError('target_ii must be positive.')
 
         self._allow_heterogeneous_table = allow_heterogeneous_table
         self._allow_heterogeneous_input = allow_heterogeneous_input
+        self._target_ii = target_ii
 
         if enable_oq:
             oq_conf = oq_conf or QuantizerConfig('default', 'table')
@@ -61,6 +66,10 @@ class QUnaryFunctionLUT(Activation, QLayerBaseSingleInput):
         )
         self.built = False
 
+    @property
+    def target_ii(self) -> int | None:
+        return self._target_ii
+
     def call(self, inputs, training=None):
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
@@ -69,12 +78,17 @@ class QUnaryFunctionLUT(Activation, QLayerBaseSingleInput):
     def _compute_ebops(self, shape):
         bw_inp = self.iq.bits_(shape)
         bw_out = self.oq.bits_(shape)
-        return table_ebops(bw_inp, bw_out)  # type: ignore
+        ebops = table_ebops(bw_inp, bw_out)  # type: ignore
+        if self.target_ii is None:
+            return ebops  # type: ignore
+        seq = shape[1]
+        return ebops * math.ceil(seq / self.target_ii) / seq
 
     def get_config(self):
         config = super().get_config()
         config['allow_heterogeneous_table'] = self._allow_heterogeneous_table
         config['allow_heterogeneous_input'] = self._allow_heterogeneous_input
+        config['target_ii'] = self._target_ii
         return config
 
 
@@ -88,6 +102,7 @@ class QAffinedUnaryFunctionLUT(QUnaryFunctionLUT):
         enable_iq=True,
         allow_heterogeneous_input: bool = True,
         allow_heterogeneous_table: bool = True,
+        target_ii: int | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -98,6 +113,7 @@ class QAffinedUnaryFunctionLUT(QUnaryFunctionLUT):
             enable_iq=enable_iq,
             allow_heterogeneous_input=allow_heterogeneous_input,
             allow_heterogeneous_table=allow_heterogeneous_table,
+            target_ii=target_ii,
             **kwargs,
         )
         self.built = False
