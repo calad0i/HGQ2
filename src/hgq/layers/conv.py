@@ -95,9 +95,8 @@ class QBaseConv(QLayerBaseSingleInput, BaseConv):
         ebops *= self.parallelization_factor / self.n_parallel  # type: ignore
 
         if self.bq is not None:
-            size = ops.cast(ops.prod(shape[:-1]) * self.filters, self.dtype)
             bw_bias = self.bq.bits_(ops.shape(self.bias))
-            ebops = ebops + ops.mean(bw_bias) * size  # type: ignore
+            ebops = ebops + ops.sum(bw_bias) * self.parallelization_factor  # type: ignore
 
         return ebops
 
