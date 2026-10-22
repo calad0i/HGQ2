@@ -6,8 +6,7 @@ from keras.initializers import Constant, Initializer
 from keras.regularizers import Regularizer
 from keras.src import backend
 from keras.src.backend.config import epsilon
-from quantizers.fixed_point._fixed_point_ops import _get_fixed_quantizer as get_fixed_quantizer
-from quantizers.fixed_point._fixed_point_ops import round_conv
+from quantizers.fixed_point.fixed_point_ops import FixedPointQuantizer, round_conv
 
 from ...constraints import MinMax
 from .base import TrainableQuantizerBase, numbers
@@ -49,6 +48,7 @@ class FixedPointQuantizerBase(TrainableQuantizerBase):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._seed_gen = None
+        self._stochastic = False
         self._is_weight = False
 
     @property
@@ -67,7 +67,9 @@ class FixedPointQuantizerBase(TrainableQuantizerBase):
         super().build(input_shape)
         if self.round_mode.startswith('S_'):
             self._seed_gen = keras.random.SeedGenerator(self._seed)
-        self.stateless_quantizer = get_fixed_quantizer(self.round_mode, self.overflow_mode)
+            self._stochastic = True
+            self._round_mode = self.round_mode[2:]
+        self.stateless_quantizer = FixedPointQuantizer(self.round_mode, self.overflow_mode)
         if self.overflow_mode == 'WRAP':
             init = Constant(self._i_decay_speed0) if not isinstance(self._i_decay_speed0, Initializer) else self._i_decay_speed0
             self._i_decay_speed = self.add_weight(name='i_decay_speed', shape=(), initializer=init, trainable=False)
@@ -156,7 +158,7 @@ class FixedPointQuantizerBase(TrainableQuantizerBase):
         k = self.bw_mapper.bw_to_x(k, ops.shape(inputs))
         i = self.bw_mapper.bw_to_x(i, ops.shape(inputs))
         f = self.bw_mapper.bw_to_x(f, ops.shape(inputs))
-        ret = self.stateless_quantizer(inputs, k, i, f, training is True, self.seed_gen)
+        ret = self.stateless_quantizer(inputs, k, i, f)
         _ret = ops.where(k + i + f > 0, ret, ops.zeros_like(ret))  # type: ignore
         return replace_grad(_ret, ret)
 
@@ -287,7 +289,11 @@ class FixedPointQuantizerKBI(FixedPointQuantizerBase):
 
     def call(self, inputs, training=None):
         if self.overflow_mode == 'WRAP' and self.trainable:
-            stochastic = self.stateless_quantizer.stochastic and training is True
+            stochastic = self._stochastic and training is True
+            if stochastic:
+                f = self.bw_mapper.bw_to_x(self.f, ops.shape(inputs))
+                inputs = inputs + keras.random.uniform(ops.shape(f), minval=-0.5, maxval=0.5, seed=self.seed_gen) * 2**-f  # type: ignore
+
             if training or training == 'tracing':  # noqa: E712, training maybe a special wrapper object
                 new_i = self.get_minimal_i(inputs)
                 if training:
@@ -296,14 +302,14 @@ class FixedPointQuantizerKBI(FixedPointQuantizerBase):
                         new_i = self._i.constraint(new_i)
                     self._i.assign(new_i)
                     f = self.bw_mapper.bw_to_x(self.f, ops.shape(inputs))
-                    return self.stateless_quantizer.round(inputs, f, stochastic, self.seed_gen)
+                    return self.stateless_quantizer.round(inputs, f)
                 else:
                     new_i = ops.stop_gradient(ops.maximum(self.i, new_i))  # type: ignore
                     if self._i.constraint is not None:
                         new_i = self._i.constraint(new_i)
 
                     f = self.bw_mapper.bw_to_x(self.b - new_i, ops.shape(inputs))  # type: ignore
-                    rinputs = self.stateless_quantizer.round(inputs, f, stochastic, self.seed_gen)
+                    rinputs = self.stateless_quantizer.round(inputs, f)
                     new_k = self.get_any_k(rinputs) & (self.b > 0)  # type: ignore
                     new_k = ops.cast(ops.cast(self.k, 'bool') | new_k, self._k.dtype)  # type: ignore
                     self._k.assign(new_k)
@@ -313,7 +319,7 @@ class FixedPointQuantizerKBI(FixedPointQuantizerBase):
             if self._is_weight:
                 f = self.bw_mapper.bw_to_x(self.f, ops.shape(inputs))
                 if self.stateless_quantizer.round_mode == 'RND':
-                    return self.stateless_quantizer.round(inputs, f, False, self.seed_gen)
+                    return self.stateless_quantizer.round(inputs, f)
 
         return super().call(inputs, training is True)
 
@@ -412,8 +418,10 @@ class FixedPointQuantizerKIF(FixedPointQuantizerBase):
     def call(self, inputs, training=None):  # type: ignore
         if self.overflow_mode == 'WRAP' and self.trainable:
             f = self.bw_mapper.bw_to_x(self.f, ops.shape(inputs))
-            stochastic = self.stateless_quantizer.stochastic and training is True
-            rinputs = self.stateless_quantizer.round(inputs, f, stochastic, self.seed_gen)
+            stochastic = self._stochastic and training is True
+            if stochastic:
+                inputs = inputs + keras.random.uniform(ops.shape(f), minval=-0.5, maxval=0.5, seed=self.seed_gen) * 2**-f  # type: ignore
+            rinputs = self.stateless_quantizer.round(inputs, f)
 
             if training or training == 'tracing':  # noqa: E712, training maybe a special wrapper object
                 _new_i = self.get_minimal_i(rinputs)

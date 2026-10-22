@@ -7,7 +7,7 @@ import keras
 import numpy as np
 from keras import ops
 from keras.saving import register_keras_serializable
-from quantizers import get_fixed_quantizer
+from quantizers.fixed_point.fixed_point_ops import FixedPointQuantizer
 
 from hgq.config import QuantizerConfig
 from hgq.constraints import Min, MinMax
@@ -117,7 +117,7 @@ class quantized_bits(QuantizerConfig):
             trainable=self.trainable,
         )
         self.config: KBIConfig
-        self.stateless_quantizer = get_fixed_quantizer(round_mode, overflow_mode)
+        self.stateless_quantizer = FixedPointQuantizer(round_mode.removeprefix('S_'), overflow_mode)
 
     @property
     def bits(self):
@@ -190,7 +190,7 @@ class quantized_bits(QuantizerConfig):
         with keras.device('cpu:0'):
             if self.scaler is not None:
                 inputs /= self.scaler
-            outputs = self.stateless_quantizer(inputs, k, b, i, False, None)
+            outputs = self.stateless_quantizer(inputs, k, b, i)
             if self.scaler is not None:
                 outputs *= self.scaler
             if self.qnoise_factor != 1.0:
