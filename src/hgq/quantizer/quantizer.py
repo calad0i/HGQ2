@@ -18,12 +18,12 @@ class Quantizer(Layer):
     def __init__(self, q_type='default', place='datalane', **kwargs): ...
 
     def __init__(self, *args, **kwargs):
-        self.supports_masking = True
         self.config, kwargs = self.get_quantizer_config_kwargs(*args, **kwargs)
         self.qnoise_factor = self.config.qnoise_factor
         self.scaler = self.config.scaler
         self.affine = self.config.affine
         super().__init__(**kwargs)
+        self.supports_masking = True  # simply pass through
         self.quantizer = self.config.get_quantizer()
 
     def build(self, input_shape):

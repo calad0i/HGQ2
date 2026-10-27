@@ -283,6 +283,7 @@ class MultipleQuantizers(Layer):
     def __init__(self, configs: Sequence[QuantizerConfig], **kwargs):
         super().__init__(**kwargs)
         self.quantizers = tuple(Quantizer(config) for config in configs)
+        self.supports_masking = True  # simply pass through
 
     def call(self, x, **kwargs):
         assert len(self) == len(x), f'{self.name} ({self.__class__.__name__}) expects {len(self)} inputs, got {len(x)}.'
