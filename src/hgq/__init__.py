@@ -26,5 +26,8 @@ The library is organized in a keras-like structure, with the following modules:
 
 from . import config, layers, quantizer, utils
 from ._version import __version__  # noqa: F401
+from .utils.torch_compile import patch_torch_trainer
+
+patch_torch_trainer()
 
 __all__ = ['config', 'layers', 'quantizer', 'utils']
