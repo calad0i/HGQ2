@@ -74,8 +74,12 @@ def _wrap(make_function, attr: str):
 def patch_torch_trainer():
     if keras.backend.backend() != 'torch':
         return
+    import torch
     from keras.src.backend.torch.trainer import TorchTrainer
+    from quantizers._backends import get_backend
 
+    for x in (torch.zeros(0), torch.nn.Parameter(torch.zeros(0))):
+        get_backend(x)
     for kind in ('train', 'test', 'predict'):
         name = f'make_{kind}_function'
         setattr(TorchTrainer, name, _wrap(getattr(TorchTrainer, name), f'{kind}_function'))
