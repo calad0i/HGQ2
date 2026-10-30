@@ -1,3 +1,5 @@
+from math import prod
+
 from keras import ops
 from keras.layers import EinsumDense
 
@@ -89,7 +91,7 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
         ebops = ops.einsum(self.ebops_equation, bw_inp, bw_ker)
         if self.bq is not None:
             bw_bias = self.bq.bits_(ops.shape(self.bias))
-            size = ops.cast(ops.prod(self.full_output_shape[1:]), self.dtype)
+            size = float(prod(self.full_output_shape[1:]))
             ebops = ebops + ops.mean(bw_bias) * size  # type: ignore
         return ebops * self.parallelization_factor / self.n_parallel  # type: ignore
 
