@@ -1,6 +1,6 @@
 from keras.backend import standardize_dtype
 from keras.layers import BatchNormalization
-from keras.src import backend, ops
+from keras.src import ops
 
 from ..quantizer import Quantizer
 from ..quantizer.config import QuantizerConfig
@@ -12,7 +12,7 @@ class QBatchNormalization(QLayerBaseSingleInput, BatchNormalization):
     @property
     def beta(self):
         if self._beta is None:
-            return backend.convert_to_tensor(0)
+            return ops.convert_to_tensor(0)
         return ops.cast(self._beta, ops.dtype(self._beta))
 
     @beta.setter

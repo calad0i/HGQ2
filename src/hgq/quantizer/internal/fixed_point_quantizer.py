@@ -6,7 +6,6 @@ from keras import ops
 from keras.constraints import Constraint
 from keras.initializers import Constant, Initializer
 from keras.regularizers import Regularizer
-from keras.src import backend
 from keras.src.backend.config import epsilon
 from quantizers.fixed_point.fixed_point_ops import FixedPointQuantizer, round_conv
 
@@ -257,7 +256,7 @@ class FixedPointQuantizerKBI(FixedPointQuantizerBase):
 
     @property
     def k(self):
-        return backend.convert_to_tensor(self._k, self.dtype)
+        return ops.convert_to_tensor(self._k, self.dtype)
 
     @property
     def b(self):

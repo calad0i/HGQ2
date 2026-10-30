@@ -1,7 +1,6 @@
 from keras import ops
 from keras.constraints import Constraint
 from keras.saving import register_keras_serializable
-from keras.src import backend
 
 from ..utils.misc import numbers
 
@@ -17,7 +16,7 @@ class MinMax(Constraint):
         self.max_value = float(max_value)
 
     def __call__(self, w):
-        w = backend.convert_to_tensor(w)
+        w = ops.convert_to_tensor(w)
         return ops.clip(w, self.min_value, self.max_value)
 
     def get_config(self):
@@ -32,7 +31,7 @@ class Constant(Constraint):
         self.value = float(value)
 
     def __call__(self, w):
-        w = backend.convert_to_tensor(w)
+        w = ops.convert_to_tensor(w)
         return ops.full_like(w, self.value)
 
     def get_config(self):
@@ -47,7 +46,7 @@ class Min(Constraint):
         self.min_value = float(min_value)
 
     def __call__(self, w):
-        w = backend.convert_to_tensor(w)
+        w = ops.convert_to_tensor(w)
         return ops.maximum(w, self.min_value)
 
     def get_config(self):
@@ -62,7 +61,7 @@ class Max(Constraint):
         self.max_value = float(max_value)
 
     def __call__(self, w):
-        w = backend.convert_to_tensor(w)
+        w = ops.convert_to_tensor(w)
         return ops.minimum(w, self.max_value)
 
     def get_config(self):
