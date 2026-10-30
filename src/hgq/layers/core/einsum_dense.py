@@ -43,6 +43,7 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
     ):
         kwargs = gather_vars_to_kwargs('self|kq_conf|bq_conf|parallelization_factor')
         super().__init__(lora_rank=None, **kwargs)
+        self.supports_masking = True
 
         kq_conf = kq_conf or QuantizerConfig('default', 'weight')
         self._kq = Quantizer(kq_conf, name=f'{self.name}_kq')

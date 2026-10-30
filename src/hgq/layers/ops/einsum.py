@@ -2,6 +2,19 @@ from keras import ops
 
 from ..core import QLayerBaseMultiInputs
 
+
+def _einsum_mask(equation: str, idx: int, mask):
+    if mask is None:
+        return None
+    lhs, out = equation.split('->')
+    n = len(mask.shape)
+    pos = [out.find(ax) for ax in lhs.split(',')[idx][:n]]
+    if sorted(pos) != list(range(n)):
+        return None
+    perm = tuple(pos.index(i) for i in range(n))
+    return mask if perm == tuple(range(n)) else ops.transpose(mask, perm)
+
+
 # class QMatmul(QLayerBaseMultiInputs):
 #     def build(self, input_shape):
 #         assert len(input_shape) == 2, 'QMatmul requires exactly 2 inputs.'
@@ -57,6 +70,20 @@ class QEinsum(QLayerBaseMultiInputs):
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
         return ops.einsum(self.equation, *inputs)
+
+    def compute_mask(self, inputs, previous_mask=None):
+        if previous_mask is None:
+            return None
+        masks = [_einsum_mask(self.equation, i, m) for i, m in enumerate(previous_mask)]
+        masks = [m for m in masks if m is not None]
+        if not masks:
+            return None
+        ndim, mask = max(len(ops.shape(m)) for m in masks), None  # type: ignore
+        for m in masks:
+            while len(ops.shape(m)) < ndim:  # type: ignore
+                m = ops.expand_dims(m, -1)
+            mask = m if mask is None else ops.logical_and(mask, m)
+        return mask
 
     def _compute_ebops(self, *shapes):
         bitss = [iq.bits_(shape) for iq, shape in zip(self.iq, shapes)]

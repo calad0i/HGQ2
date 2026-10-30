@@ -194,6 +194,7 @@ class QEinsumDenseT(QLayerBaseSingleInput):
         super().__init__(**kwargs)
 
         assert n_hl >= 0
+        self.supports_masking = True
         self.equation = equation
         self.partial_output_shape = (output_shape,) if isinstance(output_shape, int) else tuple(output_shape)
         self.n_hl = n_hl
