@@ -1,3 +1,5 @@
+from math import prod
+
 import keras
 import numpy as np
 from keras import ops
@@ -30,16 +32,16 @@ def minimal_i_given_xf(x, f, symmetric=False):
     return ops.where(x >= 0, i_pos, i_neg)
 
 
-@ops.custom_gradient
-def replace_grad(value_src, grad_src):
-    # stop_gradient(value_src - grad_src) + grad_src
+def _maybe_checkpointed_call(fn, mapper, inputs, *widths):
+    """Run ``fn(inputs, *widths)`` maybe under ``keras.remat`` if the input shape is dynamic or any width size is smaller than the input size. Saves memory in some cases."""
 
-    def grad(*args, upstream=None):
-        if upstream is None:
-            (upstream,) = args
-        return ops.zeros_like(value_src), upstream
+    def mapped(x, *ws):
+        return fn(x, *(mapper.bw_to_x(w, ops.shape(x)) for w in ws))
 
-    return value_src, grad
+    x_shape = tuple(inputs.shape)
+    if None in x_shape or any(prod(w.shape) < prod(x_shape) for w in widths):
+        return keras.remat(mapped)(inputs, *widths)
+    return mapped(inputs, *widths)
 
 
 class FixedPointQuantizerBase(TrainableQuantizerBase):
@@ -69,7 +71,7 @@ class FixedPointQuantizerBase(TrainableQuantizerBase):
             self._seed_gen = keras.random.SeedGenerator(self._seed)
             self._stochastic = True
             self._round_mode = self.round_mode[2:]
-        self.stateless_quantizer = FixedPointQuantizer(self.round_mode, self.overflow_mode)
+        self.stateless_quantizer = FixedPointQuantizer(self.round_mode, self.overflow_mode, self._null_xgrad_on_zero_width)
         if self.overflow_mode == 'WRAP':
             init = Constant(self._i_decay_speed0) if not isinstance(self._i_decay_speed0, Initializer) else self._i_decay_speed0
             self._i_decay_speed = self.add_weight(name='i_decay_speed', shape=(), initializer=init, trainable=False)
@@ -154,13 +156,7 @@ class FixedPointQuantizerBase(TrainableQuantizerBase):
         raise NotImplementedError
 
     def call(self, inputs, training=None):  # type: ignore
-        k, i, f = self.kif
-        k = self.bw_mapper.bw_to_x(k, ops.shape(inputs))
-        i = self.bw_mapper.bw_to_x(i, ops.shape(inputs))
-        f = self.bw_mapper.bw_to_x(f, ops.shape(inputs))
-        ret = self.stateless_quantizer(inputs, k, i, f)
-        _ret = ops.where(k + i + f > 0, ret, ops.zeros_like(ret))  # type: ignore
-        return replace_grad(_ret, ret)
+        return _maybe_checkpointed_call(self.stateless_quantizer, self.bw_mapper, inputs, *self.kif)
 
 
 class FixedPointQuantizerKBI(FixedPointQuantizerBase):
@@ -189,6 +185,9 @@ class FixedPointQuantizerKBI(FixedPointQuantizerBase):
         Regularizer for the number of integer bits.
     i_decay_speed : numbers
         Speed of decay for the integer bits in WRAP mode, per step. If set to negative, enable tracing of maximum number even not in training mode.
+    null_xgrad_on_zero_width : bool
+        If True, the input gradient is 0 where there are no bits (k + i + f <= 0); the output there is 0 either way. No effect
+        on trainable WRAP quantizers in training, which only round.
     """
 
     def __init__(
@@ -204,6 +203,7 @@ class FixedPointQuantizerKBI(FixedPointQuantizerBase):
         ir: Regularizer | None = None,
         i_decay_speed: numbers = float('inf'),
         is_weight: bool = False,
+        null_xgrad_on_zero_width: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -222,6 +222,7 @@ class FixedPointQuantizerKBI(FixedPointQuantizerBase):
         self.b_regularizer = br
         self.i_regularizer = ir
         self._is_weight = is_weight
+        self._null_xgrad_on_zero_width = null_xgrad_on_zero_width
 
         self.validate_config()
 
@@ -301,15 +302,13 @@ class FixedPointQuantizerKBI(FixedPointQuantizerBase):
                     if self._i.constraint is not None:
                         new_i = self._i.constraint(new_i)
                     self._i.assign(new_i)
-                    f = self.bw_mapper.bw_to_x(self.f, ops.shape(inputs))
-                    return self.stateless_quantizer.round(inputs, f)
+                    return _maybe_checkpointed_call(self.stateless_quantizer.round, self.bw_mapper, inputs, self.f)
                 else:
                     new_i = ops.stop_gradient(ops.maximum(self.i, new_i))  # type: ignore
                     if self._i.constraint is not None:
                         new_i = self._i.constraint(new_i)
 
-                    f = self.bw_mapper.bw_to_x(self.b - new_i, ops.shape(inputs))  # type: ignore
-                    rinputs = self.stateless_quantizer.round(inputs, f)
+                    rinputs = _maybe_checkpointed_call(self.stateless_quantizer.round, self.bw_mapper, inputs, self.b - new_i)
                     new_k = self.get_any_k(rinputs) & (self.b > 0)  # type: ignore
                     new_k = ops.cast(ops.cast(self.k, 'bool') | new_k, self._k.dtype)  # type: ignore
                     self._k.assign(new_k)
@@ -350,6 +349,9 @@ class FixedPointQuantizerKIF(FixedPointQuantizerBase):
         Regularizer for the number of fractional bits.
     i_decay_speed : numbers
         Speed of decay for the integer bits in WRAP mode, per step. If set to negative, enable tracing of maximum number even not in training mode.
+    null_xgrad_on_zero_width : bool
+        If True, the input gradient is 0 where there are no bits (k + i + f <= 0); the output there is 0 either way. No effect
+        on trainable WRAP quantizers in training, which only round.
     """
 
     def __init__(
@@ -365,6 +367,7 @@ class FixedPointQuantizerKIF(FixedPointQuantizerBase):
         fr: Regularizer | None = None,
         i_decay_speed: numbers = float('inf'),
         is_weight: bool = False,
+        null_xgrad_on_zero_width: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -383,6 +386,7 @@ class FixedPointQuantizerKIF(FixedPointQuantizerBase):
         self.i_regularizer = ir
         self.f_regularizer = fr
         self._is_weight = is_weight
+        self._null_xgrad_on_zero_width = null_xgrad_on_zero_width
         self.validate_config()
 
     def build(self, input_shape):
@@ -417,11 +421,14 @@ class FixedPointQuantizerKIF(FixedPointQuantizerBase):
 
     def call(self, inputs, training=None):  # type: ignore
         if self.overflow_mode == 'WRAP' and self.trainable:
-            f = self.bw_mapper.bw_to_x(self.f, ops.shape(inputs))
             stochastic = self._stochastic and training is True
             if stochastic:
+                # The noise and the rounding share one broadcast f (one width-gradient reduction): plain call.
+                f = self.bw_mapper.bw_to_x(self.f, ops.shape(inputs))
                 inputs = inputs + keras.random.uniform(ops.shape(f), minval=-0.5, maxval=0.5, seed=self.seed_gen) * 2**-f  # type: ignore
-            rinputs = self.stateless_quantizer.round(inputs, f)
+                rinputs = self.stateless_quantizer.round(inputs, f)
+            else:
+                rinputs = _maybe_checkpointed_call(self.stateless_quantizer.round, self.bw_mapper, inputs, self.f)
 
             if training or training == 'tracing':  # noqa: E712, training maybe a special wrapper object
                 _new_i = self.get_minimal_i(rinputs)

@@ -63,7 +63,7 @@ def check_axis(axis: Sequence[int], ndim: int):
     axis : list[int]
         List of positive integers representing the axis.
     """
-    axis = [a if a >= 0 else a + ndim for a in axis]
+    axis = tuple(int(a if a >= 0 else a + ndim) for a in axis)
     assert all(0 <= a < ndim for a in axis), f'Invalid axis {axis} for shape {ndim}.'
     return axis
 
@@ -162,13 +162,14 @@ class DefaultBitwidthMapper(BitwidthMapperBase):
 
     def inference_weight_shape(self, input_shape):
         N = len(input_shape)
-        axis = np.arange(N)
         if self.heterogeneous_axis is not None:
-            self.heterogeneous_axis = check_axis(self.heterogeneous_axis, N)  # type: ignore
-            self.homogeneous_axis = tuple(np.setdiff1d(axis, self.heterogeneous_axis))
+            heterogeneous = tuple(a for a in check_axis(self.heterogeneous_axis, N))
+            self.heterogeneous_axis = heterogeneous
+            self.homogeneous_axis = tuple(a for a in range(N) if a not in heterogeneous)
         elif self.homogeneous_axis is not None:
-            self.homogeneous_axis = check_axis(self.homogeneous_axis, N)  # type: ignore
-            self.heterogeneous_axis = tuple(np.setdiff1d(axis, self.homogeneous_axis))
+            homogeneous = tuple(a for a in check_axis(self.homogeneous_axis, N))
+            self.homogeneous_axis = homogeneous
+            self.heterogeneous_axis = tuple(a for a in range(N) if a not in homogeneous)
 
         weight_shape = [1] * N
         for i in self.heterogeneous_axis:  # type: ignore
@@ -183,7 +184,7 @@ class DefaultBitwidthMapper(BitwidthMapperBase):
         return ops.broadcast_to(bw, x_shape)
 
     def x_to_bw_absmax(self, x):
-        return ops.max(ops.abs(x), axis=self.homogeneous_axis, keepdims=True)
+        return ops.amax(ops.abs(x), axis=self.homogeneous_axis, keepdims=True)
 
     def x_to_bw_sign(self, x):
         return ops.any(x < 0, axis=self.homogeneous_axis, keepdims=True)

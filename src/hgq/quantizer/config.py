@@ -45,6 +45,7 @@ class KBIConfig(QuantizerConfigBase):
     br: Regularizer | None
     ir: Regularizer | None
     i_decay_speed: numbers
+    null_xgrad_on_zero_width: bool
 
 
 class KIFConfig(QuantizerConfigBase):
@@ -58,6 +59,7 @@ class KIFConfig(QuantizerConfigBase):
     fc: Constraint | None
     fr: Regularizer | None
     i_decay_speed: numbers
+    null_xgrad_on_zero_width: bool
 
 
 class FloatConfig(QuantizerConfigBase):
@@ -83,6 +85,7 @@ kbi_weight_default = KBIConfig(
     br=MonoL1(1e-8),
     ir=None,
     i_decay_speed=float('inf'),
+    null_xgrad_on_zero_width=False,
     homogeneous_axis=(),
     heterogeneous_axis=None,
     bw_mapper=None,
@@ -102,6 +105,7 @@ kbi_datalane_default = KBIConfig(
     br=MonoL1(1e-8),
     ir=None,
     i_decay_speed=0.01,
+    null_xgrad_on_zero_width=False,
     homogeneous_axis=(0,),
     heterogeneous_axis=None,
     bw_mapper=None,
@@ -120,6 +124,7 @@ kif_weight_default = KIFConfig(
     fc=MinMax(-24, 24),
     fr=MonoL1(1e-8),
     i_decay_speed=float('inf'),
+    null_xgrad_on_zero_width=False,
     homogeneous_axis=(),
     heterogeneous_axis=None,
     bw_mapper=None,
@@ -139,6 +144,7 @@ kif_datalane_default = KIFConfig(
     fc=MinMax(-24, 24),
     fr=MonoL1(1e-8),
     i_decay_speed=0.01,
+    null_xgrad_on_zero_width=False,
     homogeneous_axis=(0,),
     heterogeneous_axis=None,
     bw_mapper=None,
@@ -254,6 +260,7 @@ class QuantizerConfig(Mapping):
         br: Regularizer | None = None,
         ir: Regularizer | None = None,
         i_decay_speed: numbers = -1,
+        null_xgrad_on_zero_width: bool = False,
         homogeneous_axis: Sequence[int] | None = None,
         heterogeneous_axis: Sequence[int] | None = None,
         bw_mapper: BitwidthMapperBase | None = None,
@@ -290,6 +297,8 @@ class QuantizerConfig(Mapping):
             Regularizer for the number of integer bits, by default None
         i_decay_speed : numbers, optional
             The decay speed of the integer. Only used if `round_mode` is 'WRAP', by default -1
+        null_xgrad_on_zero_width : bool, optional
+            If True, the input gradient is 0 where there are no bits (k + i + f <= 0). No effect on trainable WRAP quantizers in training, by default False
         homogeneous_axis : Sequence[int] | None, optional
             The axes that are quantized homogeneously. Mutually exclusive with `heterogeneous_axis`. Only used if `bw_mapper` is not set, by default None
         heterogeneous_axis : Sequence[int] | None, optional
@@ -321,6 +330,7 @@ class QuantizerConfig(Mapping):
         fc: Constraint | None = MinMax(-10, 10),
         fr: Regularizer | None = None,
         i_decay_speed: numbers = 0.01,
+        null_xgrad_on_zero_width: bool = False,
         homogeneous_axis: Sequence[int] | None = (0,),
         heterogeneous_axis: Sequence[int] | None = None,
         bw_mapper: BitwidthMapperBase | None = None,
@@ -356,6 +366,8 @@ class QuantizerConfig(Mapping):
             Regularizer for the number of fraction bits, by default None
         i_decay_speed : numbers, optional
             The decay speed of the integer. Only used if `round_mode` is 'WRAP', by default 0.01
+        null_xgrad_on_zero_width : bool, optional
+            If True, the input gradient is 0 where there are no bits (k + i + f <= 0). No effect on trainable WRAP quantizers in training, by default False
         homogeneous_axis : Sequence[int] | None, optional
             The axes that are quantized homogeneously. Mutually exclusive with `heterogeneous_axis`. Only used if `bw_mapper` is not set, by default (0,)
         heterogeneous_axis : Sequence[int] | None, optional
