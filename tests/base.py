@@ -1,4 +1,5 @@
 import os
+import warnings
 from collections.abc import Sequence
 from math import ceil
 from typing import Any
@@ -9,6 +10,7 @@ import pytest
 from alkaid.converter import trace_model
 from alkaid.trace import trace as comb_trace
 from keras import ops
+from keras.src.backend import get_keras_mask, set_keras_mask
 
 from hgq.config import LayerConfigScope, QuantizerConfigScope
 from hgq.layers import QLayerBase
@@ -64,6 +66,18 @@ def _assert_equal(a: np.ndarray | tuple[np.ndarray], b: np.ndarray | tuple[np.nd
     raise AssertionError(msg)
 
 
+def masked_call(layer, inputs, n: int = 16):
+    inputs = [ops.convert_to_tensor(x[:n]) for x in (inputs if isinstance(inputs, Sequence) else [inputs])]
+    masks = [np.random.rand(*x.shape[:2]) > 0.3 for x in inputs]  # type:ignore
+    for x, m in zip(inputs, masks):
+        set_keras_mask(x, ops.convert_to_tensor(m))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        out_mask = get_keras_mask(layer(inputs if len(inputs) > 1 else inputs[0]))
+    assert not [w for w in caught if 'does not support masking' in str(w.message)]
+    return masks, None if out_mask is None else ops.convert_to_numpy(out_mask)
+
+
 class LayerTestBase:
     """Base class for testing HGQ layers"""
 
@@ -88,6 +102,10 @@ class LayerTestBase:
 
     @pytest.fixture(params=['TRN', 'RND'])
     def round_mode(self, request) -> str:
+        return request.param
+
+    @pytest.fixture(params=['auto', 'eager'] if keras.backend.backend() == 'torch' else ['auto'])
+    def jit_compile(self, request):
         return request.param
 
     @pytest.fixture
@@ -299,7 +317,7 @@ class LayerTestBase:
             """
             raise AssertionError(msg)
 
-    def test_training(self, model: keras.Model, input_data, overflow_mode: str, *args, **kwargs):
+    def test_training(self, model: keras.Model, input_data, overflow_mode: str, jit_compile, *args, **kwargs):
         """Test basic training step"""
 
         model_wrap = keras.Sequential([model, keras.layers.Flatten(), keras.layers.Lambda(lambda x: ops.sum(x))])
@@ -317,7 +335,7 @@ class LayerTestBase:
         data_len = len(input_data[0]) if isinstance(input_data, Sequence) else len(input_data)
         shape = (data_len, *model.output.shape[1:])  # type: ignore
         labels = ops.array(np.random.rand(*shape), dtype='float32')
-        model_wrap.compile(optimizer=opt, loss=loss)  # type: ignore
+        model_wrap.compile(optimizer=opt, loss=loss, jit_compile=jit_compile)  # type: ignore
         model_wrap.train_on_batch(input_data, labels)
 
         trained_weights = [w for w in model.trainable_variables]

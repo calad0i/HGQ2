@@ -8,7 +8,7 @@ from hgq.config import QuantizerConfigScope
 from hgq.layers import QLayerBase, Quantizer
 from hgq.layers.ops import QAdd, QAveragePow2, QDot, QEinsum, QMaximum, QMeanPow2, QMinimum, QMultiply, QSubtract, QSum
 
-from .base import LayerTestBase
+from .base import LayerTestBase, masked_call
 
 
 class TestQuantizer(LayerTestBase):
@@ -90,6 +90,13 @@ class TestQEinsum(MergeOpsBase):
         r_hgq: np.ndarray = ops.convert_to_numpy(hgq_layer(input_data))  # type: ignore
         r_keras: np.ndarray = ops.convert_to_numpy(ops.einsum(layer_kwargs['equation'], *input_data))  # type: ignore
         np.testing.assert_allclose(r_hgq, r_keras)
+
+    def test_mask_passthrough(self, layer, input_data, equation):
+        (m0, m1), out_mask = masked_call(layer, input_data)
+        if equation.endswith('->...'):  # masked axis 'a' is contracted
+            assert out_mask is None
+        else:
+            np.testing.assert_array_equal(out_mask, m0 & m1)
 
     @pytest.fixture(params=[True])
     def use_parallel_io(self, request) -> bool:

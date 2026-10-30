@@ -1,11 +1,12 @@
 import keras
+import numpy as np
 import pytest
 from keras import ops
 
 from hgq.config import QuantizerConfigScope
 from hgq.layers import QBatchNormDense, QDense, QEinsumDense, QEinsumDenseBatchnorm
 
-from .base import LayerTestBase
+from .base import LayerTestBase, masked_call
 
 
 class TestDense(LayerTestBase):
@@ -80,6 +81,10 @@ class TestEinsumDense(LayerTestBase):
     @pytest.fixture
     def layer_kwargs(self, equation: str, output_shape: tuple[int, ...], bias_axes: str | None):
         return {'equation': equation, 'output_shape': output_shape, 'bias_axes': bias_axes, 'activation': None}
+
+    def test_mask_passthrough(self, layer, input_data):
+        (mask,), out_mask = masked_call(layer, input_data)
+        np.testing.assert_array_equal(out_mask, mask)
 
     @pytest.fixture(params=[True])
     def use_parallel_io(self, request) -> bool:
