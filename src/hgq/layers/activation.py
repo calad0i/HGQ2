@@ -2,8 +2,8 @@ import math
 from collections.abc import Callable
 
 from keras import KerasTensor, ops
+from keras.backend import standardize_dtype
 from keras.layers import Activation
-from keras.src import backend
 
 from ..quantizer import QuantizerConfig
 from .core.base import QLayerBaseSingleInput
@@ -17,7 +17,7 @@ def table_ebops(in_bits: KerasTensor, out_bits: KerasTensor) -> KerasTensor:
 
 def _large_negative_number(dtype):
     """Return a Large negative number based on dtype."""
-    if backend.standardize_dtype(dtype) == 'float16':
+    if standardize_dtype(dtype) == 'float16':
         return -3e4
     return -1e9
 

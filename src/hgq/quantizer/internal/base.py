@@ -2,6 +2,7 @@ from collections.abc import Sequence
 
 import numpy as np
 from keras import ops
+from keras.backend import standardize_dtype
 from keras.saving import register_keras_serializable
 from keras.src import backend
 from keras.src.layers import Layer
@@ -11,7 +12,7 @@ numbers = int | float | np.integer | np.floating
 
 def _large_number(dtype):
     """Return a Large negative number based on dtype."""
-    if backend.standardize_dtype(dtype) == 'float16':
+    if standardize_dtype(dtype) == 'float16':
         return 3e4
     return 1e9
 
