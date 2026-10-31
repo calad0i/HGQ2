@@ -14,7 +14,7 @@ class QInitializer(Initializer):
     def __call__(self, shape, dtype=None):
         x = self.initializer(shape, dtype)
 
-        # max_x = ops.max(ops.abs(x))
+        # max_x = ops.amax(ops.abs(x))
         std_x = ops.std(x)
         delta = ops.mean(self.quantizer.epsilon_(ops.shape(x)))
 
@@ -22,7 +22,7 @@ class QInitializer(Initializer):
         # we want to make sure we have enough values.
         if delta > std_x and hasattr(self.initializer, 'scale'):  # type: ignore
             q = self.quantizer(x)
-            max_q = ops.max(ops.abs(q))
+            max_q = ops.amax(ops.abs(q))
             scale = 1.0
             if max_q == 0.0:
                 xx = ops.mean(x * x)
@@ -37,7 +37,7 @@ class QInitializer(Initializer):
             x = self.initializer(shape, dtype)
 
         _min, _max = self.quantizer.min_(ops.shape(x)), self.quantizer.max_(ops.shape(x))
-        _min = ops.max(_min, -_max)  # type: ignore
+        _min = ops.amax(_min, -_max)  # type: ignore
         return ops.clip(x, _min, _max)
 
     def get_config(self):

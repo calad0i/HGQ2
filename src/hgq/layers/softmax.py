@@ -124,7 +124,7 @@ class QSoftmax(QLayerBaseSingleInput):
             if mask is not None:
                 mask = ops.cast(mask, ops.dtype(inputs))
                 inputs = mask * inputs - (1 - mask) * 1e9  # type: ignore
-            inputs = ops.max(inputs, axis=self.axes, keepdims=True) - inputs
+            inputs = ops.amax(inputs, axis=self.axes, keepdims=True) - inputs
 
         exp_inp = self.exp_table(inputs, training=training)
 
@@ -152,7 +152,7 @@ class QSoftmax(QLayerBaseSingleInput):
         else:
             substract_ebops = 0
 
-        accum_ebops = ops.sum(exp_bits) - ops.sum(ops.min(exp_bits, axis=self.axes))  # type: ignore
+        accum_ebops = ops.sum(exp_bits) - ops.sum(ops.amin(exp_bits, axis=self.axes))  # type: ignore
         mult_ebops = ops.sum(exp_bits * inv_bits)  # type: ignore
 
         ebops = substract_ebops + accum_ebops + mult_ebops
