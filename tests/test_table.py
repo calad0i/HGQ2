@@ -5,7 +5,7 @@ import pytest
 from hgq.config import LayerConfigScope, QuantizerConfigScope
 from hgq.layers import QConvT1D, QConvT2D, QDenseT, QEinsumDenseT
 
-from .base import CtxGlue, LayerTestBase
+from .base import CtxGlue, LayerTestBase, masked_call
 
 
 class TableTestBase(LayerTestBase):
@@ -95,6 +95,10 @@ class TestEinsumDenseT(TableTestBase):
         equation, _, output_shape, bias_axes = einsum_case
         return {'equation': equation, 'output_shape': output_shape, 'bias_axes': bias_axes, 'n_hl': 0, 'batch_norm': batch_norm}
 
+    def test_mask_passthrough(self, layer, input_data):
+        (mask,), out_mask = masked_call(layer, input_data)
+        np.testing.assert_array_equal(out_mask, mask)
+
 
 class TestConvT1D(TableTestBase):
     layer_cls = QConvT1D
@@ -156,7 +160,7 @@ class TestConvT2D(TableTestBase):
     def layer_kwargs(self, ch_out, conv_params, batch_norm):
         return {'filters': ch_out, 'batch_norm': batch_norm, **conv_params}
 
-    def test_training(self, model: keras.Model, input_data: np.ndarray, ch_out: int):
+    def test_training(self, model: keras.Model, input_data: np.ndarray, jit_compile, ch_out: int):
         if keras.backend.backend() == 'torch' and ch_out == 1:
             pytest.skip('Torch runtime error for unknown reason when ch_out is 1.')
-        return super().test_training(model, input_data, 'SAT')
+        return super().test_training(model, input_data, 'SAT', jit_compile)
