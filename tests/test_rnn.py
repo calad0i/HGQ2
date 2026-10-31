@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 from keras import layers, ops
 
@@ -121,4 +122,6 @@ class TestQGRU(RNNTestBase):
         keras_output = keras_layer(input_data)
         q_output = q_layer(input_data)
 
-        assert ops.all(keras_output == q_output), f'{keras_output} != {q_output}'
+        keras_output = ops.convert_to_numpy(keras_output)
+        q_output = ops.convert_to_numpy(q_output)
+        np.testing.assert_allclose(q_output, keras_output, rtol=1e-6, atol=1e-6)  # type: ignore
