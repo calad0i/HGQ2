@@ -43,6 +43,9 @@ def _wrap(make_function, attr: str):
             return make_function(self, force)
         import torch
 
+        if torch.__version__ < '2.12':
+            # Dynamo before 2.12 drops all regularization losses
+            raise RuntimeError(f'jit_compile={jit_compile!r} requires torch>=2.12, got {torch.__version__}')
         if jit_compile in MODES:
             backend, mode = 'inductor', jit_compile
         elif jit_compile in (torch._dynamo.list_backends(exclude_tags=())):
@@ -57,14 +60,16 @@ def _wrap(make_function, attr: str):
             make_function(self, force)
         finally:
             self._jit_compile = jit_compile
-        compiled = torch.compile(getattr(self, attr), backend=backend, mode=mode)
+        _compiled = torch.compile(getattr(self, attr), backend=backend, mode=mode)
         if mode == 'reduce-overhead':
 
             def step(data):
                 torch.compiler.cudagraph_mark_step_begin()
-                return compiled(data)
+                return _compiled(data)
 
             compiled = step
+        else:
+            compiled = _compiled
         setattr(self, attr, compiled)
 
     return wrapper
