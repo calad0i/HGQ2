@@ -37,7 +37,7 @@ class QInitializer(Initializer):
             x = self.initializer(shape, dtype)
 
         _min, _max = self.quantizer.min_(ops.shape(x)), self.quantizer.max_(ops.shape(x))
-        _min = ops.amax(_min, -_max)  # type: ignore
+        _min = ops.maximum(_min, -_max)  # type: ignore
         return ops.clip(x, _min, _max)
 
     def get_config(self):
