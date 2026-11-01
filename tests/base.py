@@ -14,6 +14,7 @@ from keras.src.backend import get_keras_mask, set_keras_mask
 from numpy.typing import NDArray
 
 from hgq.config import LayerConfigScope, QuantizerConfigScope
+from hgq.constraints import MinMax
 from hgq.layers import QLayerBase
 from hgq.quantizer.internal import FixedPointQuantizerKBI, FixedPointQuantizerKIF
 from hgq.utils import trace_minmax
@@ -118,6 +119,9 @@ class LayerTestBase:
             k0=1,
             i0=2,
             f0=2,
+            b0=8,
+            fc=MinMax(-24, 10),
+            ic=MinMax(8 - 10, 24) if q_type == 'kbi' else MinMax(-23, 23),
             heterogeneous_axis=None,
             homogeneous_axis=(),
             overflow_mode=overflow_mode,
@@ -321,7 +325,6 @@ class LayerTestBase:
     def test_training(self, model: keras.Model, input_data, overflow_mode: str, jit_compile, *args, **kwargs):
         """Test basic training step"""
 
-        model_wrap = keras.Sequential([model, keras.layers.Flatten(), keras.layers.Lambda(lambda x: ops.sum(x))])
         if isinstance(input_data, Sequence):
             input_data = tuple(_input_data for _input_data in input_data)  # type: ignore
         else:
@@ -330,14 +333,14 @@ class LayerTestBase:
         initial_weights_np = [w.numpy() for w in model.trainable_variables]
 
         opt = keras.optimizers.SGD()
-        loss = keras.losses.MeanAbsoluteError()
+        loss = keras.losses.MeanSquaredError(reduction='sum')
         model(input_data, training=True)  # Adapt init bitwidth
 
         data_len = len(input_data[0]) if isinstance(input_data, Sequence) else len(input_data)
         shape = (data_len, *model.output.shape[1:])  # type: ignore
         labels = ops.array(np.random.rand(*shape), dtype='float32')
-        model_wrap.compile(optimizer=opt, loss=loss, jit_compile=jit_compile)  # type: ignore
-        model_wrap.train_on_batch(input_data, labels)
+        model.compile(optimizer=opt, loss=loss, jit_compile=jit_compile)  # type: ignore
+        model.train_on_batch(input_data, labels)
 
         trained_weights = [w for w in model.trainable_variables]
 
