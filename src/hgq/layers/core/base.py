@@ -97,7 +97,7 @@ class QLayerMeta(ABCMeta):
                             tensors = args[0]
                         else:
                             tensors = args
-                        shapes = ((1,) + shape[1:] for shape in map(ops.shape, tensors))
+                        shapes = [(1,) + shape[1:] for shape in map(ops.shape, tensors)]
                         if self.enable_ebops:
                             ebops = self._compute_ebops(*shapes) * self.ebops_factor
                             self._ebops.assign(ops.cast(ebops, self._ebops.dtype))

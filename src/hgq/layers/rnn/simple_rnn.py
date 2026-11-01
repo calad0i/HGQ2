@@ -1,3 +1,4 @@
+from math import prod
 from warnings import warn
 
 import keras
@@ -284,7 +285,7 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
         ebops = ebops1 + ebops2  # type: ignore
         if self.bq is not None:
             bw_bias = self.bq.bits_(ops.shape(self.bias))
-            size = ops.cast(ops.prod(shape), self.dtype)
+            size = prod(shape)
             ebops = ebops + ops.mean(bw_bias) * size  # type: ignore
         return ebops
 

@@ -1,3 +1,5 @@
+from math import prod
+
 from keras.backend import standardize_dtype
 from keras.layers import BatchNormalization
 from keras.src import ops
@@ -204,6 +206,6 @@ class QBatchNormalization(QLayerBaseSingleInput, BatchNormalization):
         bw_inp = self.iq.bits_(shape)
         bw_ker = ops.reshape(self.kq.bits_(self.moving_mean.shape), self._shape)  # type: ignore
         bw_bias = ops.reshape(self.bq.bits_(self.moving_mean.shape), self._shape)  # type: ignore
-        size = ops.cast(ops.prod(shape), self.dtype)
+        size = prod(shape)
         ebops = ops.sum(bw_inp * bw_ker) + ops.mean(bw_bias) * size  # type: ignore
         return ebops
