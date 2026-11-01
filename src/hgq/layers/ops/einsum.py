@@ -8,8 +8,11 @@ def _einsum_mask(equation: str, idx: int, mask):
     if mask is None:
         return None
     lhs, out = equation.split('->')
-    n = len(mask.shape)
-    pos = [out.find(ax) for ax in lhs.split(',')[idx][:n]]
+    axes = lhs.split(',')[idx][: len(mask.shape)]
+    if gone := tuple(i for i, ax in enumerate(axes) if ax not in out):  # contracted, valid iff all entries valid
+        mask, axes = ops.all(mask, axis=gone), ''.join(ax for ax in axes if ax in out)
+    n = len(axes)
+    pos = [out.find(ax) for ax in axes]
     if sorted(pos) != list(range(n)):
         return None
     perm = tuple(pos.index(i) for i in range(n))
