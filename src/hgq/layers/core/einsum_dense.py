@@ -5,7 +5,7 @@ from keras.layers import EinsumDense
 
 from ...quantizer import Quantizer
 from ...quantizer.config import QuantizerConfig
-from ...utils.misc import gather_vars_to_kwargs
+from ...utils.misc import expand_ellipsis, gather_vars_to_kwargs
 from .base import QLayerBaseSingleInput
 
 
@@ -70,14 +70,15 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
         if self.bias is not None:
             assert self.bq is not None
             self.bq.build(ops.shape(self.bias))
-        self.ebops_equation = self.equation.split('->')[0] + '->'
+        self._equation = expand_ellipsis(self.equation, (len(input_shape), len(ops.shape(self._kernel))))  # type: ignore
+        self.ebops_equation = self._equation.split('->')[0] + '->'
         self.full_output_shape = self.compute_output_shape(input_shape)
 
     def call(self, inputs, training=None):
         qkernel = self.kq(self._kernel, training=training)
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
-        x = ops.einsum(self.equation, inputs, qkernel)
+        x = ops.einsum(self._equation, inputs, qkernel)
         if self.bias is not None:
             assert self.bq is not None
             x += self.bq(self.bias, training=training)

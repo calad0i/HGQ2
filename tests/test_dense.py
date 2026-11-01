@@ -82,9 +82,15 @@ class TestEinsumDense(LayerTestBase):
     def layer_kwargs(self, equation: str, output_shape: tuple[int, ...], bias_axes: str | None):
         return {'equation': equation, 'output_shape': output_shape, 'bias_axes': bias_axes, 'activation': None}
 
-    def test_mask_passthrough(self, layer, input_data):
-        (mask,), out_mask = masked_call(layer, input_data)
-        np.testing.assert_array_equal(out_mask, mask)
+    @pytest.mark.parametrize('training', [None, True])
+    def test_mask_passthrough(self, layer, input_data, training):
+        (mask,), out_mask = masked_call(layer, input_data, training=training)
+        x = np.broadcast_to(np.expand_dims(~mask, tuple(range(2, input_data.ndim))), (len(mask), *input_data.shape[1:]))
+        probe = type(layer).from_config(layer.get_config())
+        probe.build(x.shape)
+        probe.kernel.assign(ops.ones(probe.kernel.shape))
+        dirty = ops.convert_to_numpy(probe(x.astype('float32'))) != 0
+        np.testing.assert_array_equal(out_mask, ~dirty.any(tuple(range(2, dirty.ndim))))
 
     @pytest.fixture(params=[True])
     def use_parallel_io(self, request) -> bool:

@@ -11,6 +11,7 @@ from alkaid.converter import trace_model
 from alkaid.trace import trace as comb_trace
 from keras import ops
 from keras.src.backend import get_keras_mask, set_keras_mask
+from numpy.typing import NDArray
 
 from hgq.config import LayerConfigScope, QuantizerConfigScope
 from hgq.layers import QLayerBase
@@ -66,14 +67,14 @@ def _assert_equal(a: np.ndarray | tuple[np.ndarray], b: np.ndarray | tuple[np.nd
     raise AssertionError(msg)
 
 
-def masked_call(layer, inputs, n: int = 16):
+def masked_call(layer, inputs, n: int = 16, training=None):
     inputs = [ops.convert_to_tensor(x[:n]) for x in (inputs if isinstance(inputs, Sequence) else [inputs])]
-    masks = [np.random.rand(*x.shape[:2]) > 0.3 for x in inputs]  # type:ignore
+    masks: list[NDArray[np.bool_]] = [np.random.rand(*x.shape[:2]) > 0.3 for x in inputs]  # type:ignore
     for x, m in zip(inputs, masks):
         set_keras_mask(x, ops.convert_to_tensor(m))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        out_mask = get_keras_mask(layer(inputs if len(inputs) > 1 else inputs[0]))
+        out_mask = get_keras_mask(layer(inputs if len(inputs) > 1 else inputs[0], training=training))
     assert not [w for w in caught if 'does not support masking' in str(w.message)]
     return masks, None if out_mask is None else ops.convert_to_numpy(out_mask)
 

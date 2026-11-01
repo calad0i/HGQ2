@@ -6,6 +6,7 @@ from keras.src.layers.core.einsum_dense import _analyze_einsum_string
 from ..quantizer.config import QuantizerConfig
 from .core.dense import masked_moments
 from .core.einsum_dense import QEinsumDense
+from .ops.einsum import _einsum_mask
 
 
 class QEinsumDenseBatchnorm(QEinsumDense):  # type: ignore
@@ -73,7 +74,6 @@ class QEinsumDenseBatchnorm(QEinsumDense):  # type: ignore
         self.gamma_regularizer = regularizers.get(gamma_regularizer)
         self.beta_constraint = constraints.get(beta_constraint)
         self.gamma_constraint = constraints.get(gamma_constraint)
-        self.supports_masking = True
 
         normalize_axes = normalize_axes or bias_axes
         assert normalize_axes is not None, 'Either normalize_axes or bias_axes must be provided.'
@@ -189,8 +189,9 @@ class QEinsumDenseBatchnorm(QEinsumDense):  # type: ignore
             inputs = self.iq(inputs, training=training)
 
         if training and self.trainable and not self.freeze_statistics:
-            x = ops.einsum(self.equation, inputs, self.kernel)
-            mean, var = masked_moments(x, self._reduction_axes, mask, self.synchronized)  # type: ignore
+            x = ops.einsum(self._equation, inputs, self.kernel)
+            stats_mask = _einsum_mask(self._equation, 0, mask)
+            mean, var = masked_moments(x, self._reduction_axes, stats_mask, self.synchronized)  # type: ignore
             self.moving_mean.assign(
                 self.moving_mean * self.momentum + mean * (1.0 - self.momentum),
             )

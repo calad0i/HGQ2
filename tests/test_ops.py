@@ -91,12 +91,14 @@ class TestQEinsum(MergeOpsBase):
         r_keras: np.ndarray = ops.convert_to_numpy(ops.einsum(layer_kwargs['equation'], *input_data))  # type: ignore
         np.testing.assert_allclose(r_hgq, r_keras)
 
-    def test_mask_passthrough(self, layer, input_data, equation):
-        (m0, m1), out_mask = masked_call(layer, input_data)
-        if equation.endswith('->...'):  # masked axis 'a' is contracted
-            assert out_mask is None
-        else:
-            np.testing.assert_array_equal(out_mask, m0 & m1)
+    def test_mask_passthrough(self, layer, input_data):
+        masks, out_mask = masked_call(layer, input_data)
+        xs, dirty = [x[: len(masks[0])] for x in input_data], np.array(False)
+        for i, m in enumerate(masks):
+            feed = [np.ones_like(x) for x in xs]
+            feed[i] = np.broadcast_to(np.expand_dims(~m, tuple(range(2, xs[i].ndim))), xs[i].shape).astype('float32')
+            dirty = dirty | (ops.convert_to_numpy(layer(feed)) != 0)
+        np.testing.assert_array_equal(out_mask, ~dirty.any(tuple(range(out_mask.ndim, dirty.ndim))))
 
     @pytest.fixture(params=[True])
     def use_parallel_io(self, request) -> bool:

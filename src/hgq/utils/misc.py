@@ -1,5 +1,7 @@
 import inspect
 import re
+from collections.abc import Sequence
+from string import ascii_letters
 from typing import Any
 
 import numpy as np
@@ -32,3 +34,22 @@ def gather_vars_to_kwargs(skip_pattern=None) -> dict[str, Any]:
         if k.startswith('__') and k.endswith('__'):
             del kwarg[k]
     return kwarg
+
+
+def expand_ellipsis(equation: str, ndims: Sequence[int]) -> str:
+    lhs, out = (s.strip() for s in equation.split('->', 1))
+    specs = [s.strip() for s in lhs.split(',')]
+    assert len(ndims) == len(specs), f'Expected {len(specs)} inputs, but got {len(ndims)}.'
+    n_elided = None
+    for spec, ndim in zip(specs, ndims):
+        if '...' not in spec:
+            assert len(spec) == ndim, f'Einsum operand {spec} does not match input rank {ndim}.'
+            continue
+        n = ndim - len(spec) + 3
+        assert n >= 0, 'Invalid ellipsis notation: expanded to negative dimensions.'
+        assert n_elided in (None, n), 'Inconsistent ellipsis expansion dimensions across inputs.'
+        n_elided = n
+    if n_elided is not None:
+        rep = ''.join(c for c in ascii_letters if c not in equation)[:n_elided]
+        specs, out = [s.replace('...', rep) for s in specs], out.replace('...', rep)
+    return ','.join(specs) + '->' + out

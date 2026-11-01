@@ -1,5 +1,6 @@
 from keras import ops
 
+from ...utils.misc import expand_ellipsis
 from ..core import QLayerBaseMultiInputs
 
 
@@ -39,32 +40,8 @@ class QEinsum(QLayerBaseMultiInputs):
 
     def build(self, input_shape):
         super().build(input_shape)
-        equation = self.equation
-        inp_idxs = [idx.strip() for idx in equation.split('->', 1)[0].split(',')]
-        out_idx = equation.split('->', 1)[1].strip()
-        inp_ndims = [len(shape) for shape in input_shape]
-        assert len(input_shape) == len(inp_idxs), f'Expected {len(inp_idxs)} inputs, but got {len(input_shape)}.'
-
-        wildcard_ndim = None
-        available_idxs = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ')
-        for inp_idx, ndim in zip(inp_idxs, inp_ndims):
-            if len(inp_idx) != ndim:
-                assert '...' in inp_idx
-                if wildcard_ndim is None:
-                    wildcard_ndim = ndim - (len(inp_idx) - 3)
-                    assert wildcard_ndim >= 0, 'Invalid ellipsis notation: expanded to negative dimensions.'
-                assert wildcard_ndim == ndim - (len(inp_idx) - 3), 'Inconsistent ellipsis expansion dimensions across inputs.'
-                available_idxs -= set(inp_idx.replace('...', ''))
-
-        if wildcard_ndim is not None:
-            rep_indices = list(available_idxs)[:wildcard_ndim]
-            rep_indices.sort()
-            rep_indices = ''.join(rep_indices)
-            for i, inp_idx in enumerate(inp_idxs):
-                inp_idxs[i] = inp_idx.replace('...', rep_indices)
-            out_idx = out_idx.replace('...', rep_indices)
-        self._ebops_equation = ','.join(inp_idxs) + '->'
-        self.equation = self._ebops_equation + out_idx
+        self.equation = expand_ellipsis(self.equation, [len(shape) for shape in input_shape])
+        self._ebops_equation = self.equation.split('->', 1)[0] + '->'
 
     def call(self, inputs, training=None):
         if self.enable_iq:

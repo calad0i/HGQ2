@@ -1,6 +1,7 @@
 import keras
 import numpy as np
 import pytest
+from keras import ops
 
 from hgq.config import LayerConfigScope, QuantizerConfigScope
 from hgq.layers import QConvT1D, QConvT2D, QDenseT, QEinsumDenseT
@@ -97,7 +98,14 @@ class TestEinsumDenseT(TableTestBase):
 
     def test_mask_passthrough(self, layer, input_data):
         (mask,), out_mask = masked_call(layer, input_data)
-        np.testing.assert_array_equal(out_mask, mask)
+        x = np.broadcast_to(np.expand_dims(~mask, tuple(range(2, input_data.ndim))), (len(mask), *input_data.shape[1:]))
+        probe = type(layer).from_config(layer.get_config() | {'n_hl': 0, 'batch_norm': False, 'activation': 'linear'})
+        probe.build(x.shape)
+        for w in probe.weights:  # linear tables with unit slope: a ones-kernel einsum
+            if w.name == 'kernel':
+                w.assign(ops.ones(w.shape))
+        dirty: np.ndarray = ops.convert_to_numpy(probe(x.astype('float32'))) != 0  # type: ignore
+        np.testing.assert_array_equal(out_mask, ~dirty.any(tuple(range(2, dirty.ndim))))
 
 
 class TestConvT1D(TableTestBase):
