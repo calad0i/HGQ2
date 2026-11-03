@@ -2,8 +2,8 @@
 trace it (fullgraph) and CUDA graphs can capture it.
 
 qdense(x (M, K), kx, ix, fx (rx, cx), w (K, N), kw, iw, fw (rw, cw), b (N,), spec) -> (y (M, N), amax, qx)
-- spec: Spec.dumps() (hgq.triton_ops.qdense.spec); amax: the trainable-WRAP abs-max of q(x) at (rx, cx) (zeros when
-  spec.amax is off); qx: q(x) as computed in the forward GEMM when spec.store_q (checks), else a 1-element dummy.
+- spec: Spec.dumps() (hgq.triton_ops.qdense.spec), free of M (x's rows: symbolic under a dynamic batch); amax: the trainable-WRAP abs-max of q(x) at (rx, cx) (zeros when
+  spec.amax is off; spec.negative, (2, rx, cx): then whether any q(x) < 0, 0 / 1); qx: q(x) as computed in the forward GEMM when spec.store_q (checks), else a 1-element dummy.
 - Gradients: x, ix, fx, w (and iw, fw when the weight is quantized on load), b; k has none (as in hgq).
 """
 
@@ -38,28 +38,27 @@ def fold_cols(p, c):
 
 
 def _fwd_impl(s, x, kx, ix, fx, w, kw, iw, fw, b):
-    dev = x.device
+    dev, M = x.device, x.shape[0]
     s = _fitted(s, dev)
-    y = torch.empty((s.M, s.N), dtype=torch.float32, device=dev)
-    ashape, adtype = s.amax_buffer()
+    y = torch.empty((M, s.N), dtype=torch.float32, device=dev)
+    ashape, adtype = s.amax_buffer(M)
     amax = torch.zeros(ashape, dtype=getattr(torch, adtype), device=dev)
-    qx = torch.empty((s.M, s.K) if s.store_q else (1,), dtype=torch.float32, device=dev)
+    qx = torch.empty((M, s.K) if s.store_q else (1,), dtype=torch.float32, device=dev)
     c = s.cfg('fwd')
-    consts = s.fwd_consts()
-    _launch(KS.qdense_fwd, s.fwd_grid(), (x, kx, ix, fx, w, kw, iw, fw, b, y, amax, qx), consts, c)
+    consts = s.fwd_consts(M)
+    _launch(KS.qdense_fwd, s.fwd_grid(M), (x, kx, ix, fx, w, kw, iw, fw, b, amax, y, qx), consts, c)
     if s.amax_mode == 1:
         amax = _fold_max(amax, s.cx)
     elif s.amax_mode == 2:
         amax = amax.view(torch.float32).clone()  # a fresh output, not a view
     else:
         amax = torch.zeros((s.rx, s.cx), dtype=torch.float32, device=dev)
-    return y, amax, qx
+    return y, amax.reshape(s.amax_shape), qx
 
 
 def _fold_max(p, c):
-    """(n_m, K) per-row-block abs-max partials -> (1, c), NaN-propagating like XLA's max."""
-    m = p.reshape(-1, p.shape[-1] // c, c).flatten(0, 1)
-    return torch.amax(m, 0, keepdim=True)
+    """(planes, n_m, K) per-row-block partials -> (planes, c), NaN-propagating like XLA's max."""
+    return torch.amax(p.reshape(p.shape[0], -1, c), 1)
 
 
 @triton_op('hgqtri::qdense_fwd', mutates_args=())
@@ -75,27 +74,27 @@ def qdense_bwd(
     g: torch.Tensor, x: torch.Tensor, kx: torch.Tensor, ix: torch.Tensor, fx: torch.Tensor, w: torch.Tensor,
     kw: torch.Tensor, iw: torch.Tensor, fw: torch.Tensor, spec: str,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:  # fmt: skip
-    dev = x.device
+    dev, M = x.device, x.shape[0]
     s = _fitted(Spec.loads(spec), dev)
     f32 = dict(dtype=torch.float32, device=dev)
     # dx = vjp_x(g @ q(w)^T), with the i / f gradient partials
-    dx = torch.empty((s.M, s.K), **f32)
-    pi = torch.empty(s.dx_partials(), **f32)
-    pf = torch.empty(s.dx_partials(), **f32)
+    dx = torch.empty((M, s.K), **f32)
+    pi = torch.empty(s.dx_partials(M), **f32)
+    pf = torch.empty(s.dx_partials(M), **f32)
     c = s.cfg('dx')
-    consts = s.dx_consts()
-    _launch(KS.qdense_dx, s.dx_grid(), (g, w, kw, iw, fw, x, kx, ix, fx, dx, pi, pf), consts, c)
+    consts = s.dx_consts(M)
+    _launch(KS.qdense_dx, s.dx_grid(M), (g, w, kw, iw, fw, x, kx, ix, fx, dx, pi, pf), consts, c)
     if s.qx[0] == 'none':
         dix = dfx = torch.zeros((s.rx, s.cx), **f32)
     else:
         dix = fold_cols(pi.sum(0), s.cx).reshape(s.rx, s.cx)
         dfx = fold_cols(pf.sum(0), s.cx).reshape(s.rx, s.cx)
     # dwq = q(x)^T @ g split over M, and db
-    c = s.cfg('dw')
-    pw = torch.empty((c['SPLIT'], s.K, s.N), **f32)
-    pb = torch.empty((c['SPLIT'], s.N) if s.bias else (1,), **f32)
-    consts = s.dw_consts()
-    _launch(KS.qdense_dw, s.dw_grid(), (x, kx, ix, fx, g, pw, pb), consts, c)
+    c, split = s.cfg('dw'), s.dw_split(M)
+    pw = torch.empty((split, s.K, s.N), **f32)
+    pb = torch.empty((split, s.N) if s.bias else (1,), **f32)
+    consts = s.dw_consts(M)
+    _launch(KS.qdense_dw, s.dw_grid(M), (x, kx, ix, fx, g, pw, pb), consts, c)
     dwq = pw.sum(0)
     db = pb.sum(0) if s.bias else torch.zeros((s.N,), **f32)
     if s.qw[0] == 'none':
@@ -120,6 +119,8 @@ def _setup(ctx, inputs, output):
 
 def _backward(ctx, gy, gamax, gqx):
     s = Spec.loads(ctx.spec)
+    if not s.dx_fits:
+        raise ValueError(f'no dx row tile divides the row period {s.rx}: this inference Spec has no backward')
     dx, dix, dfx, dw, diw, dfw, db = qdense_bwd(gy.contiguous(), *ctx.saved_tensors, ctx.spec)
     wq_grads = (diw, dfw) if s.qw[0] != 'none' else (None, None)
     return dx, None, dix, dfx, dw, None, *wq_grads, (db if s.bias else None), None

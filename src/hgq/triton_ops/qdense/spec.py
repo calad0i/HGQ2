@@ -1,5 +1,6 @@
-"""Static description of one fused quantized-dense call (shapes, quantizer forms, bit-width layouts, tiles), shared by
-the torch and JAX bindings. Pure Python: no torch / JAX / triton import.
+"""Static description of a fused quantized dense (the GEMM's N and K, quantizer forms, bit-width layouts, tiles), shared
+by the torch and JAX bindings; the row count M is a launch argument (it sets the grids and the partial buffers only), so
+one Spec serves every batch size. Pure Python: no torch / JAX / triton import.
 
 Tiles and launch parameters come from a measured table (env HGQ_QDENSE_TUNE: a JSON file keyed by kernel, problem and
 GPU), else from DEFAULT below, whose tiles are a placeholder for untuned shapes (the Triton matmul tutorial's FP32 tile).
@@ -17,8 +18,8 @@ PRECISIONS = ('ieee', 'tf32x3', 'tf32')
 # An operand's quantizer form: ('quantize' | 'round' | 'none', round_mode, overflow_mode, null_xgrad_on_zero_width)
 NONE = ('none', 'TRN', 'WRAP', False)
 
-# Untuned tiles, measured stages (see module docstring); 'S' (dx programs along M) and 'SPLIT' (dw partials) None =
-# derived.
+# Untuned tiles, measured stages (see module docstring); 'S' (at most this many dx programs along M) and 'SPLIT' (at most
+# this many dw partials) None = derived.
 DEFAULT = {
     'fwd': dict(BM=64, BN=64, BK=32, GROUP_M=8, num_warps=4, num_stages=1),
     'dx': dict(BM=64, BN=32, BK=64, S=None, num_warps=4, num_stages=1),
@@ -37,7 +38,6 @@ def cdiv(a, b):
 
 @dataclasses.dataclass(frozen=True)
 class Spec:
-    M: int
     N: int
     K: int
     qx: tuple  # x quantizer form ('none': x is used as given)
@@ -50,6 +50,7 @@ class Spec:
     amax: bool  # trainable-WRAP abs-max of q(x) over the bit-width layout
     prec: str = 'ieee'
     store_q: bool = False  # checks: also return q(x) as computed inside the forward GEMM
+    negative: bool = False  # tracing (with amax): also whether any q(x) < 0 over the bit-width layout
     fwd: tuple = ()  # tiles, as sorted (key, value) pairs (hashable)
     dx: tuple = ()
     dw: tuple = ()
@@ -87,42 +88,57 @@ class Spec:
     def amax_mode(self):  # 0 none, 1 per-row-block partials, 2 atomic max (bit widths vary along rows)
         return 0 if not self.amax else (2 if self.xr else 1)
 
-    def fwd_grid(self):
+    # launch geometry on M rows
+    def fwd_grid(self, M):
         c = self.cfg('fwd')
-        return (cdiv(self.M, c['BM']) * cdiv(self.N, c['BN']),)
+        return (cdiv(M, c['BM']) * cdiv(self.N, c['BN']),)
 
-    def amax_buffer(self):  # (shape, dtype)
+    @property
+    def dx_fits(self):  # the dx row tile divides the row period (make_spec fits one unless backward is off)
+        return not self.xr or self.rx % self.cfg('dx')['BM'] == 0
+
+    def amax_buffer(self, M):  # (shape, dtype): one plane, with negative two (abs-max, any-negative flags)
+        planes = 1 + self.negative
         if self.amax_mode == 1:
-            return (cdiv(self.M, self.cfg('fwd')['BM']), self.K), 'float32'
+            return (planes, cdiv(M, self.cfg('fwd')['BM']), self.K), 'float32'
         if self.amax_mode == 2:
-            return (self.rx, self.cx), 'int32'
+            return (planes, self.rx, self.cx), 'int32'
         return (1,), 'float32'
 
-    def dx_grid(self):
-        c = self.cfg('dx')
-        return (c['S'], cdiv(self.K, c['BK']))
+    @property
+    def amax_shape(self):  # the bindings' amax output: (rx, cx); with negative (2, rx, cx), then the 0 / 1 flags
+        return (2, self.rx, self.cx) if self.negative else (self.rx, self.cx)
 
-    def dx_partials(self):
+    def dx_programs(self, M):  # S: one per row block, at most the Spec's S
         c = self.cfg('dx')
+        return cdiv(M, c['BM']) if c['S'] is None else min(cdiv(M, c['BM']), c['S'])
+
+    def dx_grid(self, M):
+        return (self.dx_programs(M), cdiv(self.K, self.cfg('dx')['BK']))
+
+    def dx_partials(self, M):
         if self.qx[0] == 'none':
             return (1,)
         if self.xr:
-            return (c['S'] // (self.rx // c['BM']), self.rx, self.K)
-        return (c['S'], self.K)
+            return (self.dx_programs(M) // (self.rx // self.cfg('dx')['BM']), self.rx, self.K)
+        return (self.dx_programs(M), self.K)
 
-    def dw_grid(self):
+    def dw_split(self, M):  # SPLIT: the Spec's, at most the row blocks
+        return min(cdiv(M, self.cfg('dw')['BM']), self.cfg('dw')['SPLIT'])
+
+    def dw_grid(self, M):
         c = self.cfg('dw')
-        return (cdiv(self.K, c['BK']), cdiv(self.N, c['BN']), c['SPLIT'])
+        return (cdiv(self.K, c['BK']), cdiv(self.N, c['BN']), self.dw_split(M))
 
     def vjp2d_grid(self):
         c = self.cfg('vjp2d')
         return (cdiv(self.K, c['BR']), cdiv(self.N, c['BC']))
 
     # scalar / constexpr kernel arguments (after the pointer operands), the same for every binding
-    def fwd_consts(self):
+    def fwd_consts(self, M):
         c = self.cfg('fwd')
         return dict(
-            M=self.M,
+            M=M,
             N=self.N,
             K=self.K,
             RX=self.rx,
@@ -143,6 +159,7 @@ class Spec:
             WC=self.cw > 1,
             HAS_BIAS=self.bias,
             AMAX=self.amax_mode,
+            NEG=self.negative,
             STORE_Q=self.store_q,
             PREC=self.prec,
             BM=c['BM'],
@@ -151,17 +168,17 @@ class Spec:
             GROUP_M=c['GROUP_M'],
         )
 
-    def dx_consts(self):
+    def dx_consts(self, M):
         c = self.cfg('dx')
         return dict(
-            M=self.M,
+            M=M,
             N=self.N,
             K=self.K,
             RX=self.rx,
             CX=self.cx,
             RW=self.rw,
             CW=self.cw,
-            S=c['S'],
+            S=self.dx_programs(M),
             QX=self.qx[0],
             RNDX=self.qx[1],
             OVFX=self.qx[2],
@@ -180,15 +197,15 @@ class Spec:
             BK=c['BK'],
         )
 
-    def dw_consts(self):
+    def dw_consts(self, M):
         c = self.cfg('dw')
         return dict(
-            M=self.M,
+            M=M,
             N=self.N,
             K=self.K,
             RX=self.rx,
             CX=self.cx,
-            SPLIT=c['SPLIT'],
+            SPLIT=self.dw_split(M),
             QX=self.qx[0],
             RNDX=self.qx[1],
             OVFX=self.qx[2],
@@ -243,7 +260,6 @@ def dx_tile_fits(rx) -> bool:
 
 
 def make_spec(
-    M,
     N,
     K,
     qx,
@@ -258,10 +274,13 @@ def make_spec(
     store_q=False,
     n_sm=108,
     overrides=None,
+    negative=False,
+    backward=True,
 ):
-    """A Spec with tiles from the tune table (else DEFAULT) and the derived S / SPLIT. ``overrides``:
+    """A Spec with tiles from the tune table (else DEFAULT) and the derived bounds S / SPLIT. ``overrides``:
     {kernel: {param: value}} (tuning sweeps). ValueError when no dx row tile up to the tuned BM divides the row period
-    (`dx_tile_fits` false), or when ``overrides`` give a dx S that is not a multiple of rx / BM up to the row blocks."""
+    (`dx_tile_fits` false) and ``backward`` (False: an inference call's Spec, whose backward then raises), or when
+    ``overrides`` give a dx S that is not a multiple of rx / BM."""
     if prec not in PRECISIONS:
         raise ValueError(prec)
     xr = rx > 1
@@ -272,24 +291,20 @@ def make_spec(
         c.update((overrides or {}).get(kernel, {}))
         cfgs[kernel] = c
     dx, dw = cfgs['dx'], cfgs['dw']
-    n_m = cdiv(M, dx['BM'])
-    if xr:
-        # dx keeps per-period partials in registers: BM must divide the row period, S a multiple of rx / BM
-        if rx % dx['BM']:
-            fits = [b for b in DX_ROW_TILES if b <= dx['BM'] and rx % b == 0]
-            if not fits:
-                raise ValueError(f'no dx row tile up to BM={dx["BM"]} divides the row period {rx}')
-            dx['BM'] = fits[0]
-            n_m = cdiv(M, dx['BM'])
+    fits = [b for b in (dx['BM'], *DX_ROW_TILES) if b <= dx['BM'] and rx % b == 0]
+    if xr and not fits and backward:
+        raise ValueError(f'no dx row tile up to BM={dx["BM"]} divides the row period {rx}')
+    if xr and fits:
+        # dx keeps per-period partials in registers: BM must divide the row period, S a multiple of rx / BM (the row
+        # blocks are too: rx divides M)
+        dx['BM'] = fits[0]
         per = rx // dx['BM']
         if dx['S'] is None:  # enough programs to fill the GPU (2 per SM), as few partial slabs as that allows
-            dx['S'] = min(n_m, cdiv(cdiv(2 * n_sm, cdiv(K, dx['BK'])), per) * per)
-        if dx['S'] % per or dx['S'] > n_m:
-            raise ValueError(f'dx S={dx["S"]} is not a multiple of {per} (rx / BM) up to {n_m} (row blocks)')
-    elif dx['S'] is None:
-        dx['S'] = n_m
-    if dw['SPLIT'] is None:  # 2 programs per SM over the (K, N) tiles, at most one row block each
-        tiles = cdiv(K, dw['BK']) * cdiv(N, dw['BN'])
-        dw['SPLIT'] = max(1, min(cdiv(M, dw['BM']), cdiv(2 * n_sm, tiles)))
+            dx['S'] = cdiv(cdiv(2 * n_sm, cdiv(K, dx['BK'])), per) * per
+        if dx['S'] % per:
+            raise ValueError(f'dx S={dx["S"]} is not a multiple of {per} (rx / BM)')
+    if dw['SPLIT'] is None:  # 2 programs per SM over the (K, N) tiles
+        dw['SPLIT'] = cdiv(2 * n_sm, cdiv(K, dw['BK']) * cdiv(N, dw['BN']))
     frozen = {k: tuple(sorted(v.items())) for k, v in cfgs.items()}
-    return Spec(M, N, K, tuple(qx), rx, cx, tuple(qw), rw, cw, bool(bias), bool(amax), prec, bool(store_q), **frozen)
+    args = (N, K, tuple(qx), rx, cx, tuple(qw), rw, cw, bool(bias), bool(amax), prec, bool(store_q), bool(negative))
+    return Spec(*args, **frozen)

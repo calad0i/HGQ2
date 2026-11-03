@@ -342,7 +342,7 @@ class LayerTestBase:
         model.compile(optimizer=opt, loss=loss, jit_compile=jit_compile)  # type: ignore
         model.train_on_batch(input_data, labels)
 
-        trained_weights = [w for w in model.trainable_variables]
+        trained_weights = [*model.trainable_variables]
 
         boom = []
         for w0, w1 in zip(initial_weights_np, trained_weights):

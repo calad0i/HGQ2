@@ -5,16 +5,17 @@ One program per (batch b, head h, block of TB queries). Round j (key j) of the r
 1. s = Qs(where(valid, sum(q * k_j), 0)), the score quantizer's training call (stateless, or a trainable-WRAP rounding)
 2. m' = where(valid, max(m, s), m)
 3. r = E(m' - m); p = where(valid, E(where(valid, m' - s, 0)), 0), E the exp table (device.exp_table)
-4. a = Qa(r * o); b = Qa(p * where(valid, v_j, 0)); c = Ql(r * l), Qa and Ql trainable-WRAP roundings
+4. a = Qa(r * o); b = Qa(p * where(valid, v_j, 0)); c = Ql(r * l), Qa and Ql trainable-WRAP roundings (in an
+   inference call, their quantize)
 5. o' = where(valid, a + b, o); l' = where(valid, c + p, l)
 
 m starts at the quantized score of each query's first kept key (`first`), computed from that key directly
 (`_first_score`): the score quantizer is stateless, so the other rounds of a scan for it have no effect. The key loops
 run to the CTA-uniform bound n (one past the last key kept by any query of the block); per-query validity is the mask.
-Every round writes the block's maxima of |a|, |b| (per value lane) and |c|, which the integer-bit replay of Qa and Ql
-consumes; rounds from n on keep o and l, and their maxima are the quiet round's: |Qa(E(0) o)|, |Qa(0)|, |Ql(E(0) l)|.
-Each program also writes its maximum of |s| over the block's queries and keys (rounds from n on see Qs(0) = 0 when Qs
-rounds), for the replay of a rounding Qs.
+Every round takes the block's maxima of |a|, |b| (per value lane) and |c| into the integer-bit replay's buffers of Qa
+and Ql (`_amax`); rounds from n on keep o and l, and their maxima are the quiet round's: |Qa(E(0) o)|, |Qa(0)|,
+|Ql(E(0) l)|. Each program also takes its maximum of |s| over the block's queries and keys (rounds from n on see Qs(0)
+= 0 when Qs rounds), for the replay of a rounding Qs.
 
 2-pass (TWO_PASS): the first pass is the rounds above without o, with c = Ql(where(valid, r * l, 0)). The second runs
 the rounds again from the final (m, l): P = Qp(where(valid, E(where(valid, m - s, 0)) * I(l), 0)), I the inverse table
@@ -24,9 +25,17 @@ feed the replay, and rounds from n on see 0 in every call; so does each program'
 of the second pass evaluates. o is the normalized context.
 
 Quantizers are `quantizers.triton`'s (through qdense.kernels' `_quantize`), the exp table `device`'s; widths are
-tensor operands, modes constexprs: (round, overflow, null_xgrad_on_zero_width) of the score and exp-table quantizers,
-the round mode of Qa and Ql, the forms ('quantize' or 'round') of Qs, Qi and Qp. Arithmetic is elementwise FP32 (no
-tl.dot).
+tensor operands, modes constexprs: (round, overflow, null_xgrad_on_zero_width) of the score, exp-table, context and
+weight quantizers, the forms ('quantize' or 'round') of Qs, Qa, Ql, Qi and Qp. TRAINING off (an inference call: every
+form 'quantize'), attn_fwd writes o and l only.
+
+TRAINING (a training or tracing call) also flags, per head (and value lane for Qa), whether any output of Qa, Ql, Qs,
+Qp and Qi was negative over the calls, the tracing call's k update: each program ORs its own and atomically maxes them
+into the int32 ``negative`` buffer (`_any`).
+
+The maxima buffers are int32 views of float32, zero at launch, per (call, head[, value lane]); each program atomically
+maxes its block's maxima in: the values are |x| >= 0 (or NaN), whose int32 bit patterns order as the floats do (NaN
+above inf), so the result is the max over programs regardless of their order. Arithmetic is elementwise FP32 (no tl.dot).
 """
 
 import triton
@@ -88,6 +97,18 @@ def _inverse_vjp(
 
 
 @triton.jit
+def _amax(ptr, x):
+    """Atomic max of |x|'s maxima ``x`` (>= 0 or NaN) into the int32 view ``ptr``."""
+    tl.atomic_max(ptr, x.to(tl.int32, bitcast=True), sem='relaxed')
+
+
+@triton.jit
+def _any(ptr, negative):
+    """Atomic max of whether any row of the boolean ``negative`` is set into the int32 ``ptr``."""
+    tl.atomic_max(ptr, tl.max(negative.to(tl.int32), axis=0), sem='relaxed')
+
+
+@triton.jit
 def attn_fwd(
     q_ptr,  # (B, T, H, DK) projected queries
     k_ptr,  # (B, S, H, DK) projected keys
@@ -99,13 +120,13 @@ def attn_fwd(
     # 2-pass, then of the inverse table's input and output quantizers and the probability quantizer (columns 12-20)
     akif_ptr,  # (3, H, DV) the context quantizer's (k, i, f) per value lane
     scaler_ptr,  # (1,) the exp table's input scaler
+    context_ptr,  # in-out int32 (2 S, H, DV) per call max |a| (call 2 j) and |b| (call 2 j + 1) of round j (training)
+    held_ptr,  # in-out int32 (S, H) per round max |c|
+    served_ptr,  # in-out int32 (S, H) 2-pass: per round max |P| (else unused)
+    rounded_ptr,  # in-out int32 (2, H) max |s| over the queries and keys; 2-pass, max |Qi(l)| over the queries
+    negative_ptr,  # in-out int32 (5, H, DV) any Qa output negative (per lane), then (lane 0) any Ql, Qs, Qp, Qi one
     o_ptr,  # out (after every input, as jax_triton passes outputs) (B, T, H, DV) context accumulator o
     l_ptr,  # out (B, T, H) weight accumulator l
-    kept_ptr,  # out (S, B, H, NB, DV) per round max |a| over the block's queries
-    added_ptr,  # out (S, B, H, NB, DV) per round max |b|
-    held_ptr,  # out (S, B, H, NB) per round max |c|
-    served_ptr,  # out (S, B, H, NB) 2-pass: per round max |P| (else unused)
-    rounded_ptr,  # out (2, B, H, NB) max |s| over the block's queries and keys; 2-pass, max |Qi(l)| over its queries
     B: tl.constexpr,
     T: tl.constexpr,
     S: tl.constexpr,
@@ -141,6 +162,13 @@ def attn_fwd(
     OVF_P: tl.constexpr,
     NULL_P: tl.constexpr,
     EPSILON: tl.constexpr,
+    Q_A: tl.constexpr,
+    OVF_A: tl.constexpr,
+    NULL_A: tl.constexpr,
+    Q_L: tl.constexpr,
+    OVF_L: tl.constexpr,
+    NULL_L: tl.constexpr,
+    TRAINING: tl.constexpr,
 ):
     b = tl.program_id(0)
     h = tl.program_id(1)
@@ -171,13 +199,9 @@ def attn_fwd(
     soh: tl.constexpr = DV
     slb: tl.constexpr = T * H  # l
     slt: tl.constexpr = H
-    sxs: tl.constexpr = B * H * NB * DV  # kept, added
-    sxb: tl.constexpr = H * NB * DV
-    sxh: tl.constexpr = NB * DV
-    sxt: tl.constexpr = DV
-    sys: tl.constexpr = B * H * NB  # held
-    syb: tl.constexpr = H * NB
-    syh: tl.constexpr = NB
+    sxs: tl.constexpr = 2 * H * DV  # context: per round, its two calls
+    sxh: tl.constexpr = DV
+    sys: tl.constexpr = H  # held, served, rounded
 
     q = tl.load(q_ptr + b * sqb + rows[:, None] * sqt + h * sqh + dk[None, :])
     first = tl.load(first_ptr + b * sfb + rows)
@@ -191,7 +215,11 @@ def attn_fwd(
     ko = tl.load(qp_ptr + h * sph + 6)
     io = tl.load(qp_ptr + h * sph + 7)
     fo = tl.load(qp_ptr + h * sph + 8)
+    kl = tl.load(qp_ptr + h * sph + 9)
+    il = tl.load(qp_ptr + h * sph + 10)
     fl = tl.load(qp_ptr + h * sph + 11)
+    ka = tl.load(akif_ptr + h * sah + dv)[None, :]
+    ia = tl.load(akif_ptr + sak + h * sah + dv)[None, :]
     fa = tl.load(akif_ptr + 2 * sak + h * sah + dv)[None, :]
     sc = tl.load(scaler_ptr)
 
@@ -205,14 +233,18 @@ def attn_fwd(
     o = tl.zeros((TB, DV), tl.float32)
     l = tl.zeros((TB,), tl.float32)
     scored = tl.zeros((TB,), tl.float32)
-    kept_base = kept_ptr + b * sxb + h * sxh + t * sxt + dv
-    added_base = added_ptr + b * sxb + h * sxh + t * sxt + dv
-    held_base = held_ptr + b * syb + h * syh + t
+    neg_s = tl.zeros((TB,), tl.int1)
+    neg_c = tl.zeros((TB,), tl.int1)
+    neg_a = tl.zeros((TB, DV), tl.int1)
+    kept_base = context_ptr + h * sxh + dv
+    added_base = kept_base + H * DV
+    held_base = held_ptr + h
     for j in range(0, n):
         valid = tl.load(valid_base + j * sms) != 0.0
         raw = tl.sum(q * tl.load(k_base + j * sks)[None, :], axis=1)
         s = _quantize(tl.where(valid, raw, 0.0), ks, i_s, fs, Q_S, RND_S, OVF_S, NULL_S)
         scored = tl.maximum(scored, tl.abs(s), propagate_nan=tl.PropagateNan.ALL)
+        neg_s = neg_s | (s < 0)
         next_m = tl.where(valid, tl.maximum(m, s, propagate_nan=tl.PropagateNan.ALL), m)
         r = exp_table(next_m - m, sc, ke, ie, fe, ko, io, fo, RND_EI, OVF_EI, NULL_EI, RND_EO, OVF_EO, NULL_EO)
         p = exp_table(
@@ -220,20 +252,26 @@ def attn_fwd(
         )
         p = tl.where(valid, p, 0.0)
         if TWO_PASS:
-            c = fixed_round(tl.where(valid, r * l, 0.0), fl, RND_L)
-            tl.store(held_base + j * sys, tl.max(tl.abs(c), axis=0))
+            c = _quantize(tl.where(valid, r * l, 0.0), kl, il, fl, Q_L, RND_L, OVF_L, NULL_L)
+            if TRAINING:
+                _amax(held_base + j * sys, tl.max(tl.abs(c), axis=0))
+                neg_c = neg_c | (c < 0)
         else:
             vj = tl.load(v_base + j * svs)
-            a = fixed_round(r[:, None] * o, fa, RND_A)
-            bq = fixed_round(p[:, None] * tl.where(valid[:, None], vj[None, :], 0.0), fa, RND_A)
-            c = fixed_round(r * l, fl, RND_L)
-            tl.store(kept_base + j * sxs, tl.max(tl.abs(a), axis=0))
-            tl.store(added_base + j * sxs, tl.max(tl.abs(bq), axis=0))
-            tl.store(held_base + j * sys, tl.max(tl.abs(c), axis=0))
+            a = _quantize(r[:, None] * o, ka, ia, fa, Q_A, RND_A, OVF_A, NULL_A)
+            bq = _quantize(p[:, None] * tl.where(valid[:, None], vj[None, :], 0.0), ka, ia, fa, Q_A, RND_A, OVF_A, NULL_A)
+            c = _quantize(r * l, kl, il, fl, Q_L, RND_L, OVF_L, NULL_L)
+            if TRAINING:
+                _amax(kept_base + j * sxs, tl.max(tl.abs(a), axis=0))
+                _amax(added_base + j * sxs, tl.max(tl.abs(bq), axis=0))
+                _amax(held_base + j * sys, tl.max(tl.abs(c), axis=0))
+                neg_a = neg_a | (a < 0) | (bq < 0)
+                neg_c = neg_c | (c < 0)
             o = tl.where(valid[:, None], a + bq, o)
         l = tl.where(valid, c + p, l)
         m = next_m
-    tl.store(rounded_ptr + b * syb + h * syh + t, tl.max(scored, axis=0))
+    if TRAINING:
+        _amax(rounded_ptr + h, tl.max(scored, axis=0))
 
     if TWO_PASS:
         kp = tl.load(qp_ptr + h * sph + 18)
@@ -241,47 +279,61 @@ def attn_fwd(
         fp = tl.load(qp_ptr + h * sph + 20)
         inv = _inverse(l, qp_ptr + h * sph, EPSILON, Q_II, RND_II, OVF_II, NULL_II, RND_IO, OVF_IO, NULL_IO)
         ki, ii, fi = tl.load(qp_ptr + h * sph + 12), tl.load(qp_ptr + h * sph + 13), tl.load(qp_ptr + h * sph + 14)
-        lq = _quantize(l, ki, ii, fi, Q_II, RND_II, OVF_II, NULL_II)
-        tl.store(rounded_ptr + sys + b * syb + h * syh + t, tl.max(tl.abs(lq), axis=0))
-        served_base = served_ptr + b * syb + h * syh + t
+        if TRAINING:
+            lq = _quantize(l, ki, ii, fi, Q_II, RND_II, OVF_II, NULL_II)
+            _amax(rounded_ptr + H + h, tl.max(tl.abs(lq), axis=0))
+            _any(negative_ptr + (4 * H + h) * DV, lq < 0)
+        neg_p = tl.zeros((TB,), tl.int1)
+        served_base = served_ptr + h
         for j in range(0, n):
             valid, x, s = _round_scores(q, k_base, sks, valid_base, sms, j, ks, i_s, fs, Q_S, RND_S, OVF_S, NULL_S)
             e = tl.where(valid, m - s, 0.0)
             share = exp_table(e, sc, ke, ie, fe, ko, io, fo, RND_EI, OVF_EI, NULL_EI, RND_EO, OVF_EO, NULL_EO)
             prob = _quantize(tl.where(valid, share * inv, 0.0), kp, ip, fp, Q_P, RND_P, OVF_P, NULL_P)
-            a = fixed_round(tl.where(valid[:, None], o, 0.0), fa, RND_A)
-            bq = fixed_round(prob[:, None] * tl.load(v_base + j * svs)[None, :], fa, RND_A)
-            tl.store(kept_base + j * sxs, tl.max(tl.abs(a), axis=0))
-            tl.store(added_base + j * sxs, tl.max(tl.abs(bq), axis=0))
-            tl.store(served_base + j * sys, tl.max(tl.abs(prob), axis=0))
+            a = _quantize(tl.where(valid[:, None], o, 0.0), ka, ia, fa, Q_A, RND_A, OVF_A, NULL_A)
+            bq = _quantize(prob[:, None] * tl.load(v_base + j * svs)[None, :], ka, ia, fa, Q_A, RND_A, OVF_A, NULL_A)
+            if TRAINING:
+                _amax(kept_base + j * sxs, tl.max(tl.abs(a), axis=0))
+                _amax(added_base + j * sxs, tl.max(tl.abs(bq), axis=0))
+                _amax(served_base + j * sys, tl.max(tl.abs(prob), axis=0))
+                neg_a = neg_a | (a < 0) | (bq < 0)
+                neg_p = neg_p | (prob < 0)
             o = tl.where(valid[:, None], a + bq, o)
 
     tl.store(o_ptr + b * sob + rows[:, None] * sot + h * soh + dv[None, :], o)
     tl.store(l_ptr + b * slb + rows * slt + h, l)
 
-    if TWO_PASS:
-        # Rounds from n on mask every row: each quantizer call sees 0.
-        zero = tl.zeros((TB,), tl.float32)
-        kept = tl.max(tl.abs(fixed_round(tl.zeros((TB, DV), tl.float32), fa, RND_A)), axis=0)
-        held = tl.max(tl.abs(fixed_round(zero, fl, RND_L)), axis=0)
-        served = tl.max(tl.abs(_quantize(zero, kp, ip, fp, Q_P, RND_P, OVF_P, NULL_P)), axis=0)
-        for j in range(n, S):
-            tl.store(kept_base + j * sxs, kept)
-            tl.store(added_base + j * sxs, kept)
-            tl.store(held_base + j * sys, held)
-            tl.store(served_base + j * sys, served)
-    else:
-        # Rounds from n on keep every state; their quantizer calls see the rescale E(0) and no share.
-        quiet = exp_table(
-            tl.zeros((TB,), tl.float32), sc, ke, ie, fe, ko, io, fo, RND_EI, OVF_EI, NULL_EI, RND_EO, OVF_EO, NULL_EO
-        )
-        kept = tl.max(tl.abs(fixed_round(quiet[:, None] * o, fa, RND_A)), axis=0)
-        added = tl.max(tl.abs(fixed_round(tl.zeros((TB, DV), tl.float32), fa, RND_A)), axis=0)
-        held = tl.max(tl.abs(fixed_round(quiet * l, fl, RND_L)), axis=0)
-        for j in range(n, S):
-            tl.store(kept_base + j * sxs, kept)
-            tl.store(added_base + j * sxs, added)
-            tl.store(held_base + j * sys, held)
+    if TRAINING:
+        if TWO_PASS:
+            # Rounds from n on mask every row: each quantizer call sees 0.
+            zero = tl.zeros((TB,), tl.float32)
+            kept = tl.max(tl.abs(fixed_round(tl.zeros((TB, DV), tl.float32), fa, RND_A)), axis=0)
+            held = tl.max(tl.abs(fixed_round(zero, fl, RND_L)), axis=0)
+            served = tl.max(tl.abs(_quantize(zero, kp, ip, fp, Q_P, RND_P, OVF_P, NULL_P)), axis=0)
+            for j in range(n, S):
+                _amax(kept_base + j * sxs, kept)
+                _amax(added_base + j * sxs, kept)
+                _amax(held_base + j * sys, held)
+                _amax(served_base + j * sys, served)
+            _any(negative_ptr + (3 * H + h) * DV, neg_p)
+        else:
+            # Rounds from n on keep every state; their quantizer calls see the rescale E(0) and no share.
+            quiet = exp_table(
+                tl.zeros((TB,), tl.float32), sc, ke, ie, fe, ko, io, fo, RND_EI, OVF_EI, NULL_EI, RND_EO, OVF_EO, NULL_EO
+            )
+            a = fixed_round(quiet[:, None] * o, fa, RND_A)
+            c = fixed_round(quiet * l, fl, RND_L)
+            kept, held = tl.max(tl.abs(a), axis=0), tl.max(tl.abs(c), axis=0)
+            added = tl.max(tl.abs(fixed_round(tl.zeros((TB, DV), tl.float32), fa, RND_A)), axis=0)
+            for j in range(n, S):
+                _amax(kept_base + j * sxs, kept)
+                _amax(added_base + j * sxs, added)
+                _amax(held_base + j * sys, held)
+                neg_a = neg_a | (a < 0)
+                neg_c = neg_c | (c < 0)
+        _any(negative_ptr + h * DV + dv, neg_a)
+        _any(negative_ptr + (H + h) * DV, neg_c)
+        _any(negative_ptr + (2 * H + h) * DV, neg_s)
 
 
 @triton.jit
@@ -343,6 +395,13 @@ def attn_bwd(
     OVF_P: tl.constexpr,
     NULL_P: tl.constexpr,
     EPSILON: tl.constexpr,
+    Q_A: tl.constexpr,
+    OVF_A: tl.constexpr,
+    NULL_A: tl.constexpr,
+    Q_L: tl.constexpr,
+    OVF_L: tl.constexpr,
+    NULL_L: tl.constexpr,
+    TRAINING: tl.constexpr,
 ):
     """Four sweeps over the rounds sharing per-round values through this program's slice of the scratch outputs, with a
     barrier of the program's threads at each of six sync sites. (A) the rescales r_j; (B) reversed, the products R_j of

@@ -12,11 +12,15 @@ attention_forward takes:
 and the softmax's static settings (attn.spec.AttentionSettings), and returns
   o (B, T, H, DV), l (B, T, H): the context and weight accumulators (1-pass: normalization o * inv_table(l) is outside;
     2-pass: o is the normalized context)
-  kept, added (S, B, H, T / TB, DV), held (S, B, H, T / TB): per round maxima of the context quantizer's calls (|Qa(r o)|,
-  |Qa(p v)|; 2-pass |Qa(o)|, |Qa(P v)|) and of |Ql(r l)| over each block's queries, which the integer-bit replay
-  consumes after the max over the block axis; served (S, B, H, T / TB) 2-pass, per round maxima of |P|, the
-  probability quantizer's output (1-pass: (1,), unused); rounded (2, B, H, T / TB): each block's maximum of the score
-  quantizer's |output| over its queries and the keys, and 2-pass of the inverse table's |input quantizer output|.
+  context (2 S, H, DV), held (S, H): per call maxima over the batch and queries of the context quantizer's calls in
+  call order (round j: |Qa(r o)| then |Qa(p v)|; 2-pass |Qa(o)| then |Qa(P v)|) and per round of |Ql(r l)|, which the
+  integer-bit replay consumes; served (S, H) 2-pass, per round maxima of |P|, the probability quantizer's output
+  (1-pass: (1,), unused); rounded (2, H): the maximum of the score quantizer's |output| over the batch, queries and
+  keys, and 2-pass of the inverse table's |input quantizer output|. Each int32, the float32 bit patterns, from buffers
+  zeroed before the kernel atomically maxes into them (zero Refs); then negative (5, H, DV) int32, 1 where any output
+  of the context quantizer (per lane), and at lane 0 of the weight, score, probability and inverse-table input
+  quantizers, was negative over the calls (the tracing call's k update). An inference call's settings (training
+  False): each (1,), zero.
 
 attention_backward runs the backward kernel on the same operands and the cotangents go, gl of o, l, and returns its
 per-program partials; attention_cotangents reduces them to the operands' shapes. `attention` is the custom_vjp of the
@@ -29,7 +33,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from .spec import WARPS, AttentionSettings, kernel_dims, query_block
+from .spec import WARPS, AttentionSettings, kernel_dims, maxima_shapes, query_block
 
 
 def attention_forward(query, key, value, valid, first, n, qp, akif, settings: AttentionSettings, block: int | None = None):
@@ -40,7 +44,7 @@ def attention_forward(query, key, value, valid, first, n, qp, akif, settings: At
     from . import kernels as K
 
     batch, queries, heads, depth = query.shape
-    rounds, lanes = key.shape[1], value.shape[-1]
+    lanes = value.shape[-1]
     block = query_block(queries, block)
     if queries % block:
         raise ValueError(f'query block {block} does not divide {queries} queries')
@@ -52,17 +56,9 @@ def attention_forward(query, key, value, valid, first, n, qp, akif, settings: At
     valid, qp, akif = jnp.asarray(valid, f32), jnp.asarray(qp, f32), jnp.asarray(akif, f32)
     first, n = jnp.asarray(first, jnp.int32), jnp.asarray(n, jnp.int32)
     scaler = jnp.full((1,), settings.scaler, f32)
-    out_shapes = (
-        (batch, queries, heads, lanes),
-        (batch, queries, heads),
-        (rounds, batch, heads, nb, lanes),
-        (rounds, batch, heads, nb, lanes),
-        (rounds, batch, heads, nb),
-        (rounds, batch, heads, nb) if settings.two_pass else (1,),
-        (2, batch, heads, nb),
-    )
-    outs = tuple(jax.ShapeDtypeStruct(s, f32) for s in out_shapes)
-    return jax_triton.triton_call(
+    maxima = [jax.new_ref(jnp.zeros(s, jnp.int32)) for s in maxima_shapes(query.shape, key.shape, value.shape, settings)]
+    outs = (jax.ShapeDtypeStruct((batch, queries, heads, lanes), f32), jax.ShapeDtypeStruct((batch, queries, heads), f32))
+    o, l = jax_triton.triton_call(
         query,
         key,
         value,
@@ -72,6 +68,7 @@ def attention_forward(query, key, value, valid, first, n, qp, akif, settings: At
         qp,
         akif,
         scaler,
+        *maxima,
         kernel=K.attn_fwd,
         out_type=outs,
         grid=(batch, heads, nb),
@@ -80,6 +77,7 @@ def attention_forward(query, key, value, valid, first, n, qp, akif, settings: At
         **kernel_dims(query.shape, key.shape, value.shape, n.shape, qp.shape, block),
         **settings.consts(),
     )
+    return o, l, *(jax.freeze(m) for m in maxima)
 
 
 def attention_backward(
@@ -169,6 +167,6 @@ _attention.defvjp(_attention_fwd, _attention_bwd)
 
 
 def attention(query, key, value, qp, akif, valid, first, n, settings: AttentionSettings, block: int | None = None):
-    """`attention_forward` (o, l, kept, added, held, served, rounded) differentiable in query, key, value, qp and akif through the
-    backward kernel (see the module docstring)."""
+    """`attention_forward` (o, l, context, held, served, rounded, negative) differentiable in query, key, value, qp and
+    akif through the backward kernel (see the module docstring)."""
     return _attention(query, key, value, qp, akif, valid, first, n, settings, block)

@@ -61,15 +61,18 @@ def _wrap(make_function, attr: str):
         finally:
             self._jit_compile = jit_compile
         _compiled = torch.compile(getattr(self, attr), backend=backend, mode=mode)
-        if mode == 'reduce-overhead':
+        model, train = self, attr == 'train_function'
 
-            def step(data):
+        def step(data):
+            # Make all grads null so no different .grad in each step triggering recompilation
+            model._clear_losses()
+            if train:
+                model.zero_grad()
+            if mode == 'reduce-overhead':
                 torch.compiler.cudagraph_mark_step_begin()
-                return _compiled(data)
+            return _compiled(data)
 
-            compiled = step
-        else:
-            compiled = _compiled
+        compiled = step
         setattr(self, attr, compiled)
 
     return wrapper

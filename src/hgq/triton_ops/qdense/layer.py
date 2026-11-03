@@ -1,24 +1,28 @@
-"""Opt-in fused Triton route for QDense / QEinsumDense training calls.
+"""Opt-in fused Triton route for QDense / QEinsumDense training, tracing and inference calls.
 
 Switch (default off): hgq.triton_ops.enable(qdense=True), or env HGQ_TRITON_QDENSE=1. Where `applies`, the layer's call
 runs as `call`; when off, or when any condition below fails, the layer runs its keras-ops path unchanged.
 
 Fused when all hold (else gated to the keras-ops path):
-- backend jax or torch, on a CUDA GPU; training is True (inference and 'tracing' calls keep keras ops); float32 inputs
-  and kernel;
+- backend jax or torch, on a CUDA GPU; float32 inputs and kernel;
 - QDense, or a QEinsumDense whose equation is dense-like (input = batch + contracted axes, kernel = contracted + free,
   output = batch + free, in order; bias axes within the free axes);
 - the input quantizer is enabled and is a fixed-point KIF or KBI quantizer with the default bit-width mapper, no
-  scaler / qnoise / affine, deterministic rounding; KBI with trainable WRAP is gated (its update reads the unrounded
-  inputs before rounding); the bit widths are periodic over the flattened (M, K) input (per-tensor, per-channel,
-  per-element with the batch axis homogeneous, ...);
-- with bit widths varying along rows, some dx row tile divides the row period.
+  scaler / qnoise / affine, deterministic rounding; KBI with trainable WRAP is gated in training and tracing (its
+  update reads the unrounded inputs before rounding); the bit widths are periodic over the flattened (M, K) input
+  (per-tensor, per-channel, per-element with the batch axis homogeneous, ...);
+- in training and tracing, with bit widths varying along rows, some dx row tile divides the row period (inference
+  needs no backward; differentiating it then raises).
 
 Forms: the stateless quantizer's training call (every deterministic round x overflow mode, either
 null_xgrad_on_zero_width) and, for KIF trainable WRAP, `round` plus the abs-max of the rounded inputs (computed in the
 forward kernel), from which the integer bits update as in `FixedPointQuantizerKIF.call` (`minimal_i_given_xf`, then
-`_updated_i`). The kernel quantizer runs in keras ops (w pre-quantized) unless env HGQ_QDENSE_WLOAD=1 asks for
-quantization on load, which applies to non-WRAP fixed-point forms only. EBOPs and the bias quantizer stay in keras ops.
+`_updated_i`). A tracing call (training 'tracing') runs the training forms, the kernel also flagging whether any
+rounded input is negative per bit-width element, and updates as the tracing call does: i <- max(i, constraint(required
+i)) from the rounded i, k <- k | the flags. An inference call (training False or None) runs every input quantizer in
+its quantize form, trainable WRAP included, with no abs-max and no state update. The kernel quantizer runs in keras ops (w pre-quantized) unless env
+HGQ_QDENSE_WLOAD=1 asks for quantization on load, which applies to non-WRAP fixed-point forms only. EBOPs and the bias
+quantizer stay in keras ops.
 Dot precision: env HGQ_QDENSE_PREC (default 'ieee', FP32 FMA).
 
 Fallback: with the switch on, a call that cannot take the kernel route (no CUDA device, an unsupported quantizer or
@@ -86,7 +90,8 @@ def _quantizer_ok(q, shape, n_rows, training) -> bool:
         return _gate('bw mapper')
     if iq._stochastic:
         return _gate('stochastic rounding')
-    if iq.overflow_mode == 'WRAP' and iq.trainable and training is True and type(iq) is FixedPointQuantizerKBI:
+    stateful = training is True or training == 'tracing'  # KBI's tracing update also reads the unrounded inputs
+    if iq.overflow_mode == 'WRAP' and iq.trainable and stateful and type(iq) is FixedPointQuantizerKBI:
         return _gate('KBI trainable WRAP')
     if len(iq._k.shape) != len(shape):
         return _gate('bw rank')
@@ -97,9 +102,9 @@ def _quantizer_ok(q, shape, n_rows, training) -> bool:
 
 def _plan(q, shape, n_rows, training):
     """(form, rb, cb, track) of a quantizer `_quantizer_ok` admits: its kernel form, the row and column periods of its bit
-    widths, whether its integer bits update from the kernel's abs-max (trainable WRAP)."""
+    widths, whether its state updates from the kernel's abs-max (trainable WRAP, training or tracing)."""
     iq, sq = q.quantizer, q.quantizer.stateless_quantizer
-    track = iq.overflow_mode == 'WRAP' and iq.trainable and training is True
+    track = iq.overflow_mode == 'WRAP' and iq.trainable and (training is True or training == 'tracing')
     rb, cb = (prod(dims[_lead(bw) :]) for bw, dims in _parts(q, shape, n_rows))
     return ('round' if track else 'quantize', sq.round_mode, sq.overflow_mode, bool(sq.null_xgrad_on_zero_width)), rb, cb, track
 
@@ -151,14 +156,6 @@ def _gemm(layer, inputs, kind):
     return shape, k_shape, len(batch), len(contract), shape[: len(batch)] + k_shape[len(contract) :]
 
 
-def _device_ok(x):
-    if keras.backend.backend() == 'torch':
-        return bool(getattr(x, 'is_cuda', False))
-    import jax
-
-    return jax.default_backend() == 'gpu'
-
-
 def _tuning(inputs) -> dict:
     """make_spec's ``prec`` (env HGQ_QDENSE_PREC, default 'ieee': FP32 FMA) and ``n_sm`` (the device's SM count)."""
     if keras.backend.backend() == 'torch':
@@ -173,11 +170,11 @@ def _tuning(inputs) -> dict:
 
 
 def applies(layer, inputs, training) -> bool:
-    """Whether the training call of QDense / QEinsumDense ``layer`` on ``inputs`` runs as `call`; a reason it does not is
-    warned. Every check runs before the layer's quantizers are called, so a fallback updates their state once."""
-    if not triton_ops.enabled('qdense') or training is not True:
+    """Whether the call of QDense / QEinsumDense ``layer`` on ``inputs`` runs as `call`; a reason it does not is warned.
+    Every check runs before the layer's quantizers are called, so a fallback updates their state once."""
+    if not triton_ops.enabled('qdense'):
         return False
-    if not _device_ok(inputs):
+    if not triton_ops.on_cuda(inputs):
         return _gate('no CUDA device')
     if not layer.enable_iq:
         return _gate('no input quantizer')
@@ -191,39 +188,48 @@ def applies(layer, inputs, training) -> bool:
         return _gate('shape')
     if not _quantizer_ok(layer.iq, shape, n_rows, training):
         return False
-    if not dx_tile_fits(_plan(layer.iq, shape, n_rows, training)[1]):
+    if (training is True or training == 'tracing') and not dx_tile_fits(_plan(layer.iq, shape, n_rows, training)[1]):
         return _gate('no dx tile divides the row period')
     return True
 
 
-def call(layer, inputs, kind):
-    """The fused training call of ``layer`` (kind 'dense' or 'einsum') where `applies`."""
+def call(layer, inputs, kind, training):
+    """The fused call of ``layer`` (kind 'dense' or 'einsum') where `applies`, in training, tracing or inference."""
     shape, k_shape, n_rows, n_kc, out_shape = _gemm(layer, inputs, kind)
     M, K, N = prod(shape[:n_rows]), prod(shape[n_rows:]), prod(k_shape[n_kc:])
-    qx, rx, cx, track = _plan(layer.iq, shape, n_rows, True)
+    qx, rx, cx, track = _plan(layer.iq, shape, n_rows, training)
     kx, ix, fx = _kif(layer.iq, rx, cx, track)
-    wq_train = None if kind == 'dense' else True  # QDense.qkernel passes no training flag; QEinsumDense does
+    wq_train = None if kind == 'dense' else training  # QDense.qkernel passes no training flag; QEinsumDense does
     if _w_load(layer, k_shape, n_kc, wq_train):
         qw, rw, cw, _ = _plan(layer.kq, k_shape, n_kc, wq_train)
         (kw, iw, fw), kernel = _kif(layer.kq, rw, cw, False), layer._kernel
     else:  # the kernel quantizer in keras ops, then the bias, as in the layers' calls
         qw, rw, cw, (kw, iw, fw) = NONE, 1, 1, (ops.zeros((1, 1)),) * 3
-        kernel = layer.qkernel if kind == 'dense' else layer.kq(layer._kernel, training=True)
+        kernel = layer.qkernel if kind == 'dense' else layer.kq(layer._kernel, training=training)
     if layer.bias is not None:
-        qb = layer.qbias if kind == 'dense' else layer.bq(layer.bias, training=True)
+        qb = layer.qbias if kind == 'dense' else layer.bq(layer.bias, training=training)
         b = ops.reshape(qb if kind == 'dense' else ops.broadcast_to(qb, k_shape[n_kc:]), (N,))
     else:
         b = ops.zeros((N,))
-    spec = make_spec(M, N, K, qx, rx, cx, qw, rw, cw, bias=layer.bias is not None, amax=track, **_tuning(inputs))
+    tracing = training == 'tracing'
+    spec = make_spec(
+        N, K, qx, rx, cx, qw, rw, cw, bias=layer.bias is not None, amax=track, negative=track and tracing,
+        backward=training is True or tracing, **_tuning(inputs),
+    )  # fmt: skip
     if keras.backend.backend() == 'torch':
         from .torch_op import qdense
     else:
         from .jax_op import qdense
     y, amax, _ = qdense(ops.reshape(inputs, (M, K)), kx, ix, fx, ops.reshape(kernel, (K, N)), kw, iw, fw, b, spec)
-    if track:  # FixedPointQuantizerKIF.call's training update, from the kernel's abs-max of the rounded inputs
+    if track:  # FixedPointQuantizerKIF.call's update, from the kernel's abs-max (and any-negative flags) of q(x)
         iq = layer.iq.quantizer
-        xr = ops.reshape(amax, tuple(int(d) for d in iq._k.shape))
-        iq._i.assign(_updated_i(iq._i, minimal_i_given_xf(xr, iq.f, iq.symmetric), iq.i_decay_speed, iq._i.constraint))
+        bw = tuple(int(d) for d in iq._k.shape)
+        required = minimal_i_given_xf(ops.reshape(amax[0] if tracing else amax, bw), iq.f, iq.symmetric)
+        if tracing:
+            iq._k.assign(ops.cast(ops.cast(iq.k, 'bool') | (ops.reshape(amax[1], bw) > 0), iq._k.dtype))
+            iq._i.assign(_updated_i(iq.i, required, 0.0, iq._i.constraint))
+        else:
+            iq._i.assign(_updated_i(iq._i, required, iq.i_decay_speed, iq._i.constraint))
     y = ops.reshape(y, out_shape)
     if layer.activation is not None:
         y = layer.activation(y)

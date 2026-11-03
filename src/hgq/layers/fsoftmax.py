@@ -48,8 +48,6 @@ def scan_rounds(fn: Callable, init, xs, variables, mask=None):
         import jax
 
         carry, _ = jax.lax.scan(jax.checkpoint(traced), carry, xs)
-    elif keras.backend.backend() != 'tensorflow':
-        carry, _ = ops.scan(traced, carry, xs)  # type: ignore
     else:
         for i in range(int(xs[0].shape[0])):
             carry, _ = traced(carry, tuple(x[i] for x in xs))

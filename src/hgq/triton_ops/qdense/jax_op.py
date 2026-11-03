@@ -15,9 +15,9 @@ from . import kernels as KS
 from .spec import Spec
 
 
-def _launch(kernel, grid, ins, outs, consts, cfg, zeroed=()):
-    """Run ``kernel`` on operands ``ins`` (the leading kernel parameters); ``outs`` (ShapeDtypeStructs) bind to the
-    following pointer parameters; ``zeroed``: indices of outputs that must start at 0."""
+def _launch(kernel, grid, ins, outs, consts, cfg):
+    """Run ``kernel`` on operands ``ins`` (arrays and Refs, the leading kernel parameters); ``outs`` (ShapeDtypeStructs)
+    bind to the following pointer parameters."""
     return jax_triton.triton_call(
         *ins,
         kernel=kernel,
@@ -25,7 +25,6 @@ def _launch(kernel, grid, ins, outs, consts, cfg, zeroed=()):
         grid=grid,
         num_warps=cfg['num_warps'],
         num_stages=cfg['num_stages'],
-        zeroed_outputs=tuple(zeroed),
         **consts,
     )
 
@@ -43,47 +42,41 @@ def _fold_cols(p, c):
 
 
 def _fwd(s, x, kx, ix, fx, w, kw, iw, fw, b):
-    s = _fitted(s)
+    s, M = _fitted(s), x.shape[0]
     f32 = jnp.float32
-    ashape, adtype = s.amax_buffer()
-    outs = (
-        jax.ShapeDtypeStruct((s.M, s.N), f32),
-        jax.ShapeDtypeStruct(ashape, jnp.dtype(adtype)),
-        jax.ShapeDtypeStruct((s.M, s.K) if s.store_q else (1,), f32),
-    )
+    ashape, adtype = s.amax_buffer(M)
+    amax = jax.new_ref(jnp.zeros(ashape, jnp.dtype(adtype)))  # in-out: the atomic max starts at 0
+    outs = (jax.ShapeDtypeStruct((M, s.N), f32), jax.ShapeDtypeStruct((M, s.K) if s.store_q else (1,), f32))
     c = s.cfg('fwd')
-    consts = s.fwd_consts()
-    y, amax, qx = _launch(
-        KS.qdense_fwd, s.fwd_grid(), (x, kx, ix, fx, w, kw, iw, fw, b), outs, consts, c, zeroed=(1,) if s.amax_mode == 2 else ()
-    )
-    if s.amax_mode == 1:  # (n_m, K) -> (1, cx); jnp.max propagates NaN, as XLA's max in hgq's call
-        amax = jnp.max(amax.reshape(-1, s.K // s.cx, s.cx).reshape(-1, s.cx), 0, keepdims=True)
+    consts = s.fwd_consts(M)
+    y, qx = _launch(KS.qdense_fwd, s.fwd_grid(M), (x, kx, ix, fx, w, kw, iw, fw, b, amax), outs, consts, c)
+    amax = jax.freeze(amax)
+    if s.amax_mode == 1:  # (planes, n_m, K) -> (planes, cx); jnp.max propagates NaN, as XLA's max in hgq's call
+        amax = jnp.max(amax.reshape(amax.shape[0], -1, s.cx), 1)
     elif s.amax_mode == 2:
         amax = jax.lax.bitcast_convert_type(amax, f32)
     else:
         amax = jnp.zeros((s.rx, s.cx), f32)
-    return y, amax, qx
+    return y, amax.reshape(s.amax_shape), qx
 
 
 def _bwd(s, g, x, kx, ix, fx, w, kw, iw, fw):
-    s = _fitted(s)
+    s, M = _fitted(s), x.shape[0]
     f32 = jnp.float32
     S = jax.ShapeDtypeStruct
     c = s.cfg('dx')
-    consts = s.dx_consts()
-    part = S(s.dx_partials(), f32)
-    dx, pi, pf = _launch(
-        KS.qdense_dx, s.dx_grid(), (g, w, kw, iw, fw, x, kx, ix, fx), (S((s.M, s.K), f32), part, part), consts, c
-    )
+    consts = s.dx_consts(M)
+    part = S(s.dx_partials(M), f32)
+    dx, pi, pf = _launch(KS.qdense_dx, s.dx_grid(M), (g, w, kw, iw, fw, x, kx, ix, fx), (S((M, s.K), f32), part, part), consts, c)
     if s.qx[0] == 'none':
         dix = dfx = jnp.zeros((s.rx, s.cx), f32)
     else:
         dix = _fold_cols(jnp.sum(pi, 0), s.cx).reshape(s.rx, s.cx)
         dfx = _fold_cols(jnp.sum(pf, 0), s.cx).reshape(s.rx, s.cx)
-    c = s.cfg('dw')
-    consts = s.dw_consts()
-    outs = (S((c['SPLIT'], s.K, s.N), f32), S((c['SPLIT'], s.N) if s.bias else (1,), f32))
-    pw, pb = _launch(KS.qdense_dw, s.dw_grid(), (x, kx, ix, fx, g), outs, consts, c)
+    c, split = s.cfg('dw'), s.dw_split(M)
+    consts = s.dw_consts(M)
+    outs = (S((split, s.K, s.N), f32), S((split, s.N) if s.bias else (1,), f32))
+    pw, pb = _launch(KS.qdense_dw, s.dw_grid(M), (x, kx, ix, fx, g), outs, consts, c)
     dwq = jnp.sum(pw, 0)
     db = jnp.sum(pb, 0) if s.bias else jnp.zeros((s.N,), f32)
     if s.qw[0] == 'none':
@@ -107,6 +100,8 @@ def _op(s: Spec):
         return _fwd(s, x, kx, ix, fx, w, kw, iw, fw, b), (x, kx, ix, fx, w, kw, iw, fw, b)
 
     def op_bwd(res, cts):
+        if not s.dx_fits:
+            raise ValueError(f'no dx row tile divides the row period {s.rx}: this inference Spec has no backward')
         x, kx, ix, fx, w, kw, iw, fw, b = res
         gy = cts[0]  # amax and qx are not differentiated (hgq stop-gradients the integer-bit update)
         dx, dix, dfx, dw, diw, dfw, db = _bwd(s, gy, x, kx, ix, fx, w, kw, iw, fw)

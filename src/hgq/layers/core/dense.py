@@ -81,7 +81,7 @@ class QDense(QLayerBaseSingleInput, Dense):
 
     def call(self, inputs, training=None):
         if qdense_layer.applies(self, inputs, training):
-            return qdense_layer.call(self, inputs, 'dense')
+            return qdense_layer.call(self, inputs, 'dense', training)
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
         x = ops.matmul(inputs, self.qkernel)

@@ -10,13 +10,15 @@ broadcast (T, C), or a column period (1, hd). ROWS / COLS (constexpr) say whethe
 bit-width blocks are loaded at that reduced shape ((1, 1), (1, BC), (BR, 1), (BR, BC)), so subexpressions of the traced
 quantizer that depend on bit widths only are evaluated at that shape, not per element.
 
-Problem dimensions (M, N, K; R, C) and loop controls (S, SPLIT) are compile-time constants (from the Spec), so loops,
-masks and staged copies are specialized to the shape; the bit-width periods stay runtime integers.
+The GEMM's N, K (R, C) are compile-time constants (from the Spec), so the loops over them, their masks and staged
+copies are specialized to the shape; the row count M, the program counts along it (S, SPLIT) and the bit-width periods
+are runtime integers, so a new batch size reuses the compiled kernels.
 
 Kernels:
 - qdense_fwd: y = q(x) @ q(w) + b (FP32 accumulate, tl.dot input_precision PREC), optional trainable-WRAP abs-max of
   q(x) (AMAX 1: per row block, (cdiv(M, BM), K) partials; AMAX 2: atomic max into the (RB, CB) int32 view, used when
-  the bit widths vary along rows) and optionally q(x) itself (STORE_Q, checks only).
+  the bit widths vary along rows; NEG, a tracing call's: a second plane of whether any q(x) < 0, 0.0 / 1.0, AMAX 2
+  as 1.0's bit pattern) and optionally q(x) itself (STORE_Q, checks only).
 - qdense_dx: dq = g @ q(w)^T, then the x quantizer's vjp in the epilogue: dx, and the per-element i / f gradient terms
   summed over rows into partials. S programs stride over the M tiles; with bit widths varying along rows (XR) every
   tile of a program starts at the same row offset in the period (S * BM % RB == 0), so the program keeps (BM, BK)
@@ -91,11 +93,12 @@ def _load_q(
 @triton.jit
 def qdense_fwd(
     x_ptr, kx_ptr, ix_ptr, fx_ptr, w_ptr, kw_ptr, iw_ptr, fw_ptr, b_ptr,
-    y_ptr, amax_ptr, qx_ptr,
-    M: tl.constexpr, N: tl.constexpr, K: tl.constexpr, RX, CX, RW, CW,
+    amax_ptr,  # in-out, zeroed (a JAX Ref: jax-triton 0.4.1 misbinds a Ref after an output parameter)
+    y_ptr, qx_ptr,
+    M, N: tl.constexpr, K: tl.constexpr, RX, CX, RW, CW,
     QX: tl.constexpr, RNDX: tl.constexpr, OVFX: tl.constexpr, NULLX: tl.constexpr, XR: tl.constexpr, XC: tl.constexpr,
     QW: tl.constexpr, RNDW: tl.constexpr, OVFW: tl.constexpr, NULLW: tl.constexpr, WR: tl.constexpr, WC: tl.constexpr,
-    HAS_BIAS: tl.constexpr, AMAX: tl.constexpr, STORE_Q: tl.constexpr, PREC: tl.constexpr,
+    HAS_BIAS: tl.constexpr, AMAX: tl.constexpr, NEG: tl.constexpr, STORE_Q: tl.constexpr, PREC: tl.constexpr,
     BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr, GROUP_M: tl.constexpr,
 ):  # fmt: skip
     pid = tl.program_id(0)
@@ -116,11 +119,16 @@ def qdense_fwd(
         if AMAX == 1:
             a = tl.reduce(tl.abs(xq), 0, _nanmax)
             tl.store(amax_ptr + pid_m * K + rk, a, mask=(rk < K) & lead)
+            if NEG:
+                tl.store(amax_ptr + (n_m + pid_m) * K + rk, tl.max((xq < 0).to(tl.float32), 0), mask=(rk < K) & lead)
         if AMAX == 2:
             # |q(x)| >= 0 (or NaN), so its int32 bit pattern orders as the float does (NaN above inf)
             ai = tl.abs(xq).to(tl.int32, bitcast=True)
             offs = (rm % RX).to(tl.int64)[:, None] * CX + (rk % CX)[None, :]
             tl.atomic_max(amax_ptr + offs, ai, mask=xmask & lead)
+            if NEG:
+                neg = (xq < 0).to(tl.float32).to(tl.int32, bitcast=True)
+                tl.atomic_max(amax_ptr + RX * CX + offs, neg, mask=xmask & lead)
         if STORE_Q:
             tl.store(qx_ptr + rm.to(tl.int64)[:, None] * K + rk[None, :], xq, mask=xmask & lead)
         wq, _ = _load_q(w_ptr, kw_ptr, iw_ptr, fw_ptr, rk, rn, K, N, RW, CW, WR, WC, QW, RNDW, OVFW, NULLW)
@@ -135,7 +143,7 @@ def qdense_fwd(
 def qdense_dx(
     g_ptr, w_ptr, kw_ptr, iw_ptr, fw_ptr, x_ptr, kx_ptr, ix_ptr, fx_ptr,
     dx_ptr, pi_ptr, pf_ptr,
-    M: tl.constexpr, N: tl.constexpr, K: tl.constexpr, RX, CX, RW, CW, S: tl.constexpr,
+    M, N: tl.constexpr, K: tl.constexpr, RX, CX, RW, CW, S,
     QX: tl.constexpr, RNDX: tl.constexpr, OVFX: tl.constexpr, NULLX: tl.constexpr, XR: tl.constexpr, XC: tl.constexpr,
     QW: tl.constexpr, RNDW: tl.constexpr, OVFW: tl.constexpr, NULLW: tl.constexpr, WR: tl.constexpr, WC: tl.constexpr, PREC: tl.constexpr,
     BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr,
@@ -195,7 +203,7 @@ def qdense_dx(
 def qdense_dw(
     x_ptr, kx_ptr, ix_ptr, fx_ptr, g_ptr,
     pw_ptr, pb_ptr,
-    M: tl.constexpr, N: tl.constexpr, K: tl.constexpr, RX, CX, SPLIT: tl.constexpr,
+    M, N: tl.constexpr, K: tl.constexpr, RX, CX, SPLIT,
     QX: tl.constexpr, RNDX: tl.constexpr, OVFX: tl.constexpr, NULLX: tl.constexpr, XR: tl.constexpr, XC: tl.constexpr, HAS_BIAS: tl.constexpr, PREC: tl.constexpr,
     BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr,
 ):  # fmt: skip
@@ -246,14 +254,15 @@ def qvjp2d(
 KERNELS = {'fwd': qdense_fwd, 'dx': qdense_dx, 'dw': qdense_dw, 'vjp2d': qvjp2d}
 
 
-def compile_spec(spec, kernel, target, num_stages=None):
+def compile_spec(spec, kernel, target, num_stages=None, M=1 << 16):
     """``kernel`` ('fwd', 'dx', 'dw', 'vjp2d') of ``spec`` compiled for ``target`` (a triton GPUTarget) as the bindings
-    launch it: the Spec's constexprs, runtime integers specialized as Triton and jax-triton do (1 a constant, multiples
-    of 16 divisible), 16-byte aligned operands; at ``num_stages`` (default the Spec's). Compiles only (no device)."""
+    launch it on ``M`` rows: the Spec's constexprs, runtime integers specialized as Triton's launcher does (1 a constant,
+    multiples of 16 divisible; jax-triton 0.4.1 specializes 1 only), 16-byte aligned operands; at ``num_stages`` (default
+    the Spec's). Compiles only (no device)."""
     from triton.compiler import ASTSource
 
     fn = KERNELS[kernel]
-    consts = getattr(spec, f'{kernel}_consts')()
+    consts = spec.vjp2d_consts() if kernel == 'vjp2d' else getattr(spec, f'{kernel}_consts')(M)
     constexprs = {fn.arg_names[i] for i in fn.constexprs}
     sig, const, attrs = {}, {}, {}
     for i, name in enumerate(fn.arg_names):
@@ -274,8 +283,8 @@ def compile_spec(spec, kernel, target, num_stages=None):
 @lru_cache(maxsize=None)
 def fit_stages(spec, target, limit):
     """``spec`` with each kernel's num_stages lowered until the kernel, compiled for ``target``, needs at most ``limit``
-    bytes of shared memory (the device's per-block limit); a kernel at one stage is not compiled here (nothing to fall
-    back to: its launch reports an overflow)."""
+    bytes of shared memory (the device's per-block limit; it depends on the tiles, not on M); a kernel at one stage is
+    not compiled here (nothing to fall back to: its launch reports an overflow)."""
     for kernel in KERNELS:
         n = spec.cfg(kernel)['num_stages']
         while n > 1 and compile_spec(spec, kernel, target, n).metadata.shared > limit:

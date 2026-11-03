@@ -599,19 +599,19 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         #   N = `num_attention_heads`
         #   H = `size_per_head`
         # `query` = [B, T, N ,H]
-        query = self._query_dense(query)
+        query = self._query_dense(query, training=training)
 
         # `key` = [B, S, N, H]
-        key = self._key_dense(key)
+        key = self._key_dense(key, training=training)
 
         # `value` = [B, S, N, H]
-        value = self._value_dense(value)
+        value = self._value_dense(value, training=training)
 
         if attn_layer.applies(self, query, key, value, training):
             attention_output, attention_scores = attn_layer.attention(self, query, key, value, attention_mask, training), None
         else:
             attention_output, attention_scores = self._compute_attention(query, key, value, attention_mask, training)
-        attention_output = self._output_dense(attention_output)
+        attention_output = self._output_dense(attention_output, training=training)
 
         if self.enable_oq:
             attention_output = self.oq(attention_output, training=training)

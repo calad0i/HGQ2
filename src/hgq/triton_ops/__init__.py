@@ -106,4 +106,21 @@ def enabled(kind: str) -> bool:
     return _on[kind]
 
 
+def on_cuda(x) -> bool:
+    """Whether a call on ``x`` runs on a CUDA GPU. torch: the tensor's device. JAX: a concrete array's devices; inside a
+    trace, the device JAX places uncommitted computation on (jax_default_device, else the default backend's first)."""
+    if keras.backend.backend() == 'torch':
+        return bool(getattr(x, 'is_cuda', False))
+    import jax
+
+    default = jax.config.jax_default_device
+    if isinstance(x, jax.Array) and not isinstance(x, jax.core.Tracer):
+        devices = x.devices()
+    elif isinstance(default, str):
+        devices = jax.devices(default)[:1]
+    else:
+        devices = [default if default is not None else jax.devices()[0]]
+    return all(d.platform == 'gpu' and 'cuda' in d.client.platform_version.lower() for d in devices)
+
+
 enable(qdense=os.environ.get('HGQ_TRITON_QDENSE') == '1', attention=os.environ.get('HGQ_TRITON_ATTENTION') == '1')

@@ -77,7 +77,7 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
 
     def call(self, inputs, training=None):
         if qdense_layer.applies(self, inputs, training):
-            return qdense_layer.call(self, inputs, 'einsum')
+            return qdense_layer.call(self, inputs, 'einsum', training)
         qkernel = self.kq(self._kernel, training=training)
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
