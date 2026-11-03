@@ -40,6 +40,7 @@ pip install hls4ml>=1.2.0
 1. **Incompatible Keras Version**: HGQ2 requires Keras v3. If you see errors related to missing attributes or incompatible methods, check your Keras version:
    ```python
    import keras
+
    print(keras.__version__)  # Should be 3.x
    ```
 

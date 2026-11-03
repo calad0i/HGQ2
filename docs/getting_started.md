@@ -33,22 +33,24 @@ with QuantizerConfigScope(q_type='kbi', place='weight', overflow_mode='SAT_SYM',
     with QuantizerConfigScope(q_type='kif', place='datalane', overflow_mode='WRAP', round_mode='RND'):
         with LayerConfigScope(enable_ebops=True, beta0=1e-5):
             # Create model with quantized layers
-            model = keras.Sequential([
-                keras.layers.Reshape((28, 28, 1)),
-                keras.layers.MaxPooling2D((2, 2)),
-                QConv2D(16, (3, 3), activation='relu'),
-                keras.layers.MaxPooling2D((2, 2)),
-                QConv2D(32, (3, 3), activation='relu'),
-                keras.layers.MaxPooling2D((2, 2)),
-                keras.layers.Flatten(),
-                QDense(10)
-            ])
+            model = keras.Sequential(
+                [
+                    keras.layers.Reshape((28, 28, 1)),
+                    keras.layers.MaxPooling2D((2, 2)),
+                    QConv2D(16, (3, 3), activation='relu'),
+                    keras.layers.MaxPooling2D((2, 2)),
+                    QConv2D(32, (3, 3), activation='relu'),
+                    keras.layers.MaxPooling2D((2, 2)),
+                    keras.layers.Flatten(),
+                    QDense(10),
+                ]
+            )
 
 # Compile model as usual
 model.compile(
     optimizer=keras.optimizers.Adam(learning_rate=0.001),
     loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-    metrics=['accuracy']
+    metrics=['accuracy'],
 )
 ```
 
@@ -94,7 +96,7 @@ hls_model = convert_from_keras_model(
     model,
     output_dir='hls_project',
     backend='Vitis',
-    io_type='io_parallel'  # or 'io_stream' for streaming interface
+    io_type='io_parallel',  # or 'io_stream' for streaming interface
 )
 
 # Write out and compile the C++ model for simulation
@@ -106,7 +108,7 @@ hls_model._compile()
 # Notice that due to the quantization, internal mismatches may be amplified, but the vast majority of the output should match
 keras_pred = model.predict(x_test)
 hls_pred = hls_model.predict(x_test)
-print(f"{np.sum(keras_pred != hls_pred)} / {np.prod(keras_pred.shape)} value mismatches")
+print(f'{np.sum(keras_pred != hls_pred)} / {np.prod(keras_pred.shape)} value mismatches')
 ```
 
 ```{note}

@@ -93,7 +93,7 @@ def trace_minmax(
 
     if return_results:
         if n_outputs == 1:
-            return np.concatenate([r for r in results])
+            return np.concatenate([*results])
         return tuple(np.concatenate([r[i] for r in results]) for i in range(n_outputs))
     else:
         return int(sum(record.values()))
