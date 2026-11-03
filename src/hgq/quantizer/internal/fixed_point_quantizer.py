@@ -31,6 +31,12 @@ def minimal_i_given_xf(x, f, symmetric=False):
     return ops.where(x >= 0, i_pos, i_neg)
 
 
+def _updated_i(i, required_i, decay, constraint):
+    if constraint is not None:
+        required_i = constraint(required_i)
+    return ops.stop_gradient(ops.maximum(i - decay, required_i))  # type: ignore
+
+
 def _maybe_checkpointed_call(fn, mapper, inputs, *widths):
     """Run ``fn(inputs, *widths)`` maybe under ``keras.remat`` if the input shape is dynamic or any width size is smaller than the input size. Saves memory in some cases."""
 
@@ -432,10 +438,7 @@ class FixedPointQuantizerKIF(FixedPointQuantizerBase):
             if training or training == 'tracing':  # noqa: E712, training maybe a special wrapper object
                 _new_i = self.get_minimal_i(rinputs)
                 if training:
-                    if self._i.constraint is not None:
-                        _new_i = self._i.constraint(_new_i)
-                    new_i = ops.stop_gradient(ops.maximum(self._i - self.i_decay_speed, _new_i))  # type: ignore
-                    self._i.assign(new_i)
+                    self._i.assign(_updated_i(self._i, _new_i, self.i_decay_speed, self._i.constraint))
                 else:
                     # tracing
                     if self._i.constraint is not None:

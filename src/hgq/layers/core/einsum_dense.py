@@ -5,6 +5,7 @@ from keras.layers import EinsumDense
 
 from ...quantizer import Quantizer
 from ...quantizer.config import QuantizerConfig
+from ...triton_ops.qdense import layer as qdense_layer
 from ...utils.misc import expand_ellipsis, gather_vars_to_kwargs
 from .base import QLayerBaseSingleInput
 
@@ -75,6 +76,8 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
         self.full_output_shape = self.compute_output_shape(input_shape)
 
     def call(self, inputs, training=None):
+        if qdense_layer.applies(self, inputs, training):
+            return qdense_layer.call(self, inputs, 'einsum')
         qkernel = self.kq(self._kernel, training=training)
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)

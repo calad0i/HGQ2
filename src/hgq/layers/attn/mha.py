@@ -11,6 +11,7 @@ from keras.saving import register_keras_serializable
 from keras.src.layers.attention.multi_head_attention import _build_attention_equation, _build_proj_equation
 
 from ...quantizer.config import QuantizerConfig
+from ...triton_ops.attn import layer as attn_layer
 from ...utils.misc import gather_vars_to_kwargs
 from ..activation import table_ebops
 from ..core.base import QLayerBase
@@ -606,7 +607,10 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         # `value` = [B, S, N, H]
         value = self._value_dense(value)
 
-        attention_output, attention_scores = self._compute_attention(query, key, value, attention_mask, training)
+        if attn_layer.applies(self, query, key, value, training):
+            attention_output, attention_scores = attn_layer.attention(self, query, key, value, attention_mask, training), None
+        else:
+            attention_output, attention_scores = self._compute_attention(query, key, value, attention_mask, training)
         attention_output = self._output_dense(attention_output)
 
         if self.enable_oq:

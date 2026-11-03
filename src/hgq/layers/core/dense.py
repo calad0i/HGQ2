@@ -5,6 +5,7 @@ from keras.layers import Dense
 
 from ...quantizer import Quantizer
 from ...quantizer.config import QuantizerConfig
+from ...triton_ops.qdense import layer as qdense_layer
 from ...utils.misc import gather_vars_to_kwargs
 from .base import QLayerBaseSingleInput
 
@@ -79,6 +80,8 @@ class QDense(QLayerBaseSingleInput, Dense):
             self.bq.build(ops.shape(self.bias))
 
     def call(self, inputs, training=None):
+        if qdense_layer.applies(self, inputs, training):
+            return qdense_layer.call(self, inputs, 'dense')
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
         x = ops.matmul(inputs, self.qkernel)
