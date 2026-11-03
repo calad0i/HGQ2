@@ -10,8 +10,7 @@ _on = {'qdense': False, 'attention': False}
 
 
 def enable(qdense: bool = True, attention: bool = True):
-    """Switch the Triton training routes on or off; None keeps a route as it is. Switching one on imports it and raises
-    if it cannot run on this backend."""
+    """Switch the Triton training routes on or off. Switching one on imports it and raises if cannot run on selected backend."""
     backend = keras.backend.backend()
     for kind, on, package in (('qdense', qdense, 'qdense'), ('attention', attention, 'attn')):
         if on:
@@ -26,8 +25,7 @@ def enable(qdense: bool = True, attention: bool = True):
                 _patch_inductor()
             else:
                 _patch_jax_triton()
-        if on is not None:
-            _on[kind] = bool(on)
+        _on[kind] = bool(on)
 
 
 @functools.cache
