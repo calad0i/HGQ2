@@ -3,7 +3,7 @@ HGQ2: High Granularity Quantization 2
 
 [![repo](https://img.shields.io/badge/repo-github-gx)](https://github.com/calad0i/hgq2)
 [![PyPI](https://img.shields.io/pypi/v/hgq2?color=green)](https://pypi.org/project/HGQ2/)
-[![LGPLv3](https://img.shields.io/badge/License-LGPLv3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0.en.html)
+[![AGPLv3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.en.html)
 [![Documentation](https://github.com/calad0i/HGQ2/actions/workflows/sphinx-build.yml/badge.svg)](https://calad0i.github.io/HGQ2/)
 
 <img src="https://calad0i.github.io/HGQ2/_images/overview.svg" alt="HGQ2 Overview" width="650"/>
@@ -52,26 +52,23 @@ Please refer to the [documentation](https://calad0i.github.io/HGQ2/) for more de
 A minimal example is shown below:
 
 ```python
-   import keras
-   from hgq.layers import QDense, QConv2D
-   from hgq.config import LayerConfigScope, QuantizerConfigScope
+import keras
+from hgq.layers import QDense, QConv2D
+from hgq.config import LayerConfigScope, QuantizerConfigScope
 
-   # Setup quantization configuration
-   # These values are the defaults, just for demonstration purposes here
-   with (
-      # Configuration scope for setting the default quantization type and overflow mode
-      # The second configuration scope overrides the first one for the 'datalane' place
-      QuantizerConfigScope(place='all', default_q_type='kbi', overflow_mode='SAT_SYM'),
-      # Configuration scope for enabling EBOPs and setting the beta0 value
-      QuantizerConfigScope(place='datalane', default_q_type='kif', overflow_mode='WRAP'),
-      LayerConfigScope(enable_ebops=True, beta0=1e-5),
-   ):
-      model = keras.Sequential([
-         QConv2D(32, (3, 3), activation='relu'),
-         keras.layers.MaxPooling2D((2, 2)),
-         keras.layers.Flatten(),
-         QDense(10)
-      ])
+# Setup quantization configuration
+# These values are the defaults, just for demonstration purposes here
+with (
+    # Configuration scope for setting the default quantization type and overflow mode
+    # The second configuration scope overrides the first one for the 'datalane' place
+    QuantizerConfigScope(place='all', default_q_type='kbi', overflow_mode='SAT_SYM'),
+    # Configuration scope for enabling EBOPs and setting the beta0 value
+    QuantizerConfigScope(place='datalane', default_q_type='kif', overflow_mode='WRAP'),
+    LayerConfigScope(enable_ebops=True, beta0=1e-5),
+):
+    model = keras.Sequential(
+        [QConv2D(32, (3, 3), activation='relu'), keras.layers.MaxPooling2D((2, 2)), keras.layers.Flatten(), QDense(10)]
+    )
 ```
 
 ## Citation

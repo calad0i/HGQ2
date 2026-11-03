@@ -53,6 +53,6 @@ HGQ2 comes with a preliminary `QKeras` compatibility layer in **alpha** quality 
 
 ## Premission and License
 
-This library, HGQ2, is a free software licensed under the LGPLv3 license. You can find the full license text in the `LICENSE` file in the root directory of the repository.
+This library, HGQ2, is a free software licensed under the AGPLv3 license. You can find the full license text in the `LICENSE` file in the root directory of the repository.
 
 If you use this work in your research, we would appreciate a citation to our paper at [arXiv](https://arxiv.org/abs/2405.00645).

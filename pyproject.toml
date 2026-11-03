@@ -1,6 +1,5 @@
 [build-system]
 build-backend = "setuptools.build_meta"
-
 requires = [ "setuptools>=67.8", "setuptools-scm>=8" ]
 
 [project]
@@ -8,21 +7,22 @@ name = "hgq2"
 description = "High Granularity Quantization 2"
 readme = "README.md"
 keywords = [ "hls4ml", "keras", "qkeras", "quantization" ]
-license = { text = "GNU Lesser General Public License v3 (LGPLv3)" }
+license = { text = "GNU Affero General Public License v3 (AGPLv3)" }
 authors = [ { name = "Chang Sun", email = "chsun@cern.ch" } ]
 requires-python = ">=3.10"
 classifiers = [
   "Development Status :: 4 - Beta",
-  "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
+  "License :: OSI Approved :: GNU Affero General Public License v3 (AGPLv3)",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
 ]
 dynamic = [ "version" ]
-
 dependencies = [ "keras>=3.15", "quantizers>=2", "tqdm" ]
 optional-dependencies.docs = [ "myst-parser", "pyparsing", "sphinx", "sphinx-rtd-theme" ]
 optional-dependencies.test = [
@@ -39,26 +39,22 @@ optional-dependencies.test = [
   "pytest-xdist>=3.3",
 ]
 urls.repository = "https://github.com/calad0i/HGQ2"
-
-entry-points."alkaid_keras".hgq = "hgq._alkaid_keras_plugin:register"
 entry-points."dais_tracer.plugins".keras = "hgq._dais_tracer.main:HGQ2DAISTracer"
+entry-points.alkaid_keras.hgq = "hgq._alkaid_keras_plugin:register"
 
 [tool.setuptools]
 packages = [ "hgq", "qkeras" ]
-include-package-data = true
 package-dir = { "" = "src" }
+include-package-data = true
 
 [tool.setuptools_scm]
 write_to = "src/hgq/_version.py"
 
 [tool.ruff]
 target-version = "py310"
-
 line-length = 130
 indent-width = 4
-
 include = [ "src/hgq/**/*.py", "src/qkeras/**/*.py" ]
-
 format.indent-style = "space"
 format.quote-style = "single"
 format.skip-magic-trailing-comma = false
@@ -68,34 +64,35 @@ lint.select = [ "E", "F", "F401", "I", "W" ]
 lint.ignore = [ "E501", "E731", "E741", "F403", "F405" ]
 lint.explicit-preview-rules = true
 lint.fixable = [ "ALL" ]
-lint.unfixable = [  ]
+lint.unfixable = []
 
-[tool.pytest.ini_options]
-filterwarnings = [
+[tool.pytest]
+ini_options.addopts = [
+  "--import-mode=importlib",
+  "--cov=src/hgq",
+  "--cov-report=xml",
+  "--cov-report=html",
+]
+ini_options.filterwarnings = [
   "ignore:You are saving your model as an HDF5 file:UserWarning",
   "ignore:Even though the `tf.config.experimental_run_functions_eagerly`:UserWarning",
   "ignore:pkg_resources is deprecated as an API:DeprecationWarning",
   "ignore:distutils Version classes are deprecated:DeprecationWarning",
   "ignore:module 'sre_constants' is deprecated:DeprecationWarning",
   "ignore:Deprecated call to `pkg_resources.declare_namespace:DeprecationWarning",
-  "ignore:in the future the `.dtype` attribute of a given datatype object must be a valid dtype instance.:DeprecationWarning",
+  """\
+  ignore:in the future the `.dtype` attribute of a given datatype object must be a valid dtype \
+  instance.:DeprecationWarning\
+  """,
   "ignore:Skipping variable loading for optimizer 'adam':UserWarning",
   "ignore:The structure of `inputs` doesn't match the expected structure.:UserWarning",
   "ignore: __array__ implementation doesn't accept a copy keyword:DeprecationWarning",
 ]
-
-env = [
+ini_options.env = [
   "JAX_PLATFORMS=cpu",
   "MKL_NUM_THREADS=1",
   "OPENBLAS_NUM_THREADS=1",
 ]
 
-addopts = [
-  "--import-mode=importlib",
-  "--cov=src/hgq",
-  "--cov-report=xml",
-  "--cov-report=html",
-]
-
-[tool.coverage.run]
-omit = [ "*/_version.py" ]
+[tool.coverage]
+run.omit = [ "*/_version.py" ]

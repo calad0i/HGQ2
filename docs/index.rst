@@ -15,9 +15,9 @@ High Granularity Quantization 2
    :target: https://pypi.org/project/HGQ2/
    :alt: PyPI
 
-.. image:: https://img.shields.io/badge/License-LGPLv3-blue.svg
-   :target: https://www.gnu.org/licenses/lgpl-3.0.en.html
-   :alt: LGPLv3
+.. image:: https://img.shields.io/badge/License-AGPLv3-blue.svg
+   :target: https://www.gnu.org/licenses/agpl-3.0.en.html
+   :alt: AGPLv3
 
 .. image:: https://github.com/calad0i/HGQ2/actions/workflows/sphinx-build.yml/badge.svg
    :target: https://calad0i.github.io/HGQ2/
