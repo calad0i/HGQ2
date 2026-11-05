@@ -24,6 +24,7 @@ Only `Vitis` and `Vivado` (deprecated) backends are fully supported for `hls4ml`
 - ✅ **Core layers**: QDense
 - ✅ **Non-linear Activation layers**: QUnaryFunctionLUT
 - ✅ **Convolutional layers**: QConv1D, QConv2D, QConv3D (non-dilated only)
+- ✅ **QDepthwiseConv1D/2D, QSeparableConv1D/2D**: Aliases of QConv. Depthwise is a grouped QConv (groups = in_channels, filters = in_channels * depth_multiplier); separable is a QDepthwiseConv followed by a 1x1 QConv.
 - ✅ **Normalization**: QBatchNormalization
 - ✅ **Basic operation layers**: QAdd, QMultiply, QSubtract, QMaximum, QMinimum
 
@@ -47,7 +48,6 @@ These features are functional but may undergo changes or improvements:
 - 🟠 **QMultiHeadAttention**: Only `io_parallel` supported in `hls4ml`. Implementation is likely not optimal, but can generate synthesizable firmware.
 - 🟠 **QSum, QMeanPow2**: No `hls4ml` support at the moment.
 - 🟠 **QConv3D**: No `hls4ml` support.
-- 🟠 **QDepthwiseConv1D/2D, QSeparableConv1D/2D, QPointwiseConv1D/2D**: New. `hls4ml` converts QSeparableConv into depthwise + quantizer (`pq`, the depthwise result) + 1x1 conv. No `da4ml` (alkaid) tracing yet.
 
 ```{warning}
 `QConv*D` layer has greater numerical instability on the `torch` backend compared to `jax` and `tf`. Expect to slight difference between the keras model and the `hls4ml` model. Though, the difference should not affect the performance of the model significantly.

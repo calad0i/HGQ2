@@ -1,7 +1,7 @@
 from ..quantizer import Quantizer
 from .activation import QUnaryFunctionLUT
 from .batch_normalization import QBatchNormalization
-from .conv import QConv1D, QConv2D, QConv3D, QPointwiseConv1D, QPointwiseConv2D
+from .conv import QConv1D, QConv2D, QConv3D, QDepthwiseConv1D, QDepthwiseConv2D, QSeparableConv1D, QSeparableConv2D
 from .core import *
 from .einsum_dense_batchnorm import QEinsumDenseBatchnorm
 from .linformer_attention import QLinformerAttention
@@ -45,7 +45,6 @@ from .pooling import (
     QMaxPooling3D as QMaxPool3D,
 )
 from .rnn import QGRU, QSimpleRNN
-from .separable_conv import QDepthwiseConv1D, QDepthwiseConv2D, QSeparableConv1D, QSeparableConv2D
 from .softmax import QSoftmax
 from .table import QConvT1D, QConvT2D, QDenseT
 
@@ -55,8 +54,6 @@ __all__ = [
     'QConv1D',
     'QConv2D',
     'QConv3D',
-    'QPointwiseConv1D',
-    'QPointwiseConv2D',
     'QDepthwiseConv1D',
     'QDepthwiseConv2D',
     'QSeparableConv1D',

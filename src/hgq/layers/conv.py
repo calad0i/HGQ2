@@ -4,7 +4,7 @@ from keras.src.layers.convolutional.base_conv import BaseConv
 from ..quantizer import Quantizer
 from ..quantizer.config import QuantizerConfig
 from ..utils.misc import gather_vars_to_kwargs
-from .core.base import QLayerBaseSingleInput
+from .core.base import QLayerBase, QLayerBaseSingleInput
 
 
 class QBaseConv(QLayerBaseSingleInput, BaseConv):
@@ -91,7 +91,10 @@ class QBaseConv(QLayerBaseSingleInput, BaseConv):
             bw_inp = ops.max(bw_inp, axis=reduce_axis_input)  # Keep only maximum per channel
             reduce_axis_kernel = tuple(range(0, self.rank))
             bw_ker = ops.sum(bw_ker, axis=reduce_axis_kernel)  # Keep only sum per channel
-            ebops = ops.sum(bw_inp[:, None] * bw_ker)  # type: ignore
+            # Each group only mixes its own input channels: (groups, in/groups) x (in/groups, groups, filters/groups)
+            bw_inp = ops.reshape(bw_inp, (self.groups, -1))
+            bw_ker = ops.reshape(bw_ker, (bw_ker.shape[0], self.groups, -1))
+            ebops = ops.sum(ops.einsum('gi,igo->go', bw_inp, bw_ker))  # type: ignore
 
         if self.bq is not None:
             size = ops.cast(ops.prod(shape[:-1]) * self.filters, self.dtype)
@@ -246,25 +249,341 @@ class QConv3D(QBaseConv):
         super().__init__(rank=3, **kwargs)
 
 
-def _pointwise_kernel_size(kwargs, rank):
-    kernel_size = kwargs.pop('kernel_size', 1)
-    kernel_size = (kernel_size,) * rank if isinstance(kernel_size, int) else tuple(kernel_size)
-    if kernel_size != (1,) * rank:
-        raise ValueError(f'A pointwise convolution has a kernel size of 1, got {kernel_size}')
-    return 1
+class QBaseDepthwiseConv:
+    """Depthwise convolution as a grouped QConv: groups = in_channels and filters = in_channels * depth_multiplier,
+    both fixed in build once the input channels are known. Output channel c * depth_multiplier + m is kernel m of
+    input channel c, as in keras' DepthwiseConv, but the kernel has the grouped QConv layout
+    (*kernel_size, 1, in_channels * depth_multiplier)."""
+
+    def __init__(
+        self,
+        kernel_size,
+        strides,
+        padding,
+        depth_multiplier,
+        data_format,
+        dilation_rate,
+        activation,
+        use_bias,
+        depthwise_initializer,
+        bias_initializer,
+        depthwise_regularizer,
+        bias_regularizer,
+        activity_regularizer,
+        depthwise_constraint,
+        bias_constraint,
+        **kwargs,
+    ):
+        super().__init__(  # type: ignore
+            filters=depth_multiplier,  # in_channels * depth_multiplier, set in build
+            kernel_size=kernel_size,
+            strides=strides,
+            padding=padding,
+            data_format=data_format,
+            dilation_rate=dilation_rate,
+            activation=activation,
+            use_bias=use_bias,
+            kernel_initializer=depthwise_initializer,
+            bias_initializer=bias_initializer,
+            kernel_regularizer=depthwise_regularizer,
+            bias_regularizer=bias_regularizer,
+            activity_regularizer=activity_regularizer,
+            kernel_constraint=depthwise_constraint,
+            bias_constraint=bias_constraint,
+            **kwargs,
+        )
+        self.depth_multiplier = depth_multiplier
+
+    def build(self, input_shape):
+        n_chan = input_shape[-1] if self.data_format == 'channels_last' else input_shape[1]
+        self.groups = n_chan
+        self.filters = n_chan * self.depth_multiplier
+        super().build(input_shape)  # type: ignore
+
+    def get_config(self):
+        config = super().get_config()  # type: ignore
+        del config['filters'], config['groups']
+        for key in ('initializer', 'regularizer', 'constraint'):
+            config[f'depthwise_{key}'] = config.pop(f'kernel_{key}')
+        config['depth_multiplier'] = self.depth_multiplier
+        return config
 
 
-class QPointwiseConv1D(QConv1D):
-    """QConv1D with a kernel size of 1: mixes channels at every position."""
+class QDepthwiseConv1D(QBaseDepthwiseConv, QConv1D):
+    def __init__(
+        self,
+        kernel_size,
+        strides=1,
+        padding='valid',
+        depth_multiplier=1,
+        data_format=None,
+        dilation_rate=1,
+        activation=None,
+        use_bias=True,
+        depthwise_initializer='glorot_uniform',
+        bias_initializer='zeros',
+        depthwise_regularizer=None,
+        bias_regularizer=None,
+        activity_regularizer=None,
+        depthwise_constraint=None,
+        bias_constraint=None,
+        kq_conf: None | QuantizerConfig = None,
+        iq_conf: None | QuantizerConfig = None,
+        bq_conf: None | QuantizerConfig = None,
+        **kwargs,
+    ):
+        kwargs = gather_vars_to_kwargs('self')
+        super().__init__(**kwargs)
 
-    def __init__(self, filters, strides=1, padding='valid', **kwargs):
-        kernel_size = _pointwise_kernel_size(kwargs, 1)
-        super().__init__(filters, kernel_size, strides=strides, padding=padding, **kwargs)
+
+class QDepthwiseConv2D(QBaseDepthwiseConv, QConv2D):
+    def __init__(
+        self,
+        kernel_size,
+        strides=(1, 1),
+        padding='valid',
+        depth_multiplier=1,
+        data_format=None,
+        dilation_rate=(1, 1),
+        activation=None,
+        use_bias=True,
+        depthwise_initializer='glorot_uniform',
+        bias_initializer='zeros',
+        depthwise_regularizer=None,
+        bias_regularizer=None,
+        activity_regularizer=None,
+        depthwise_constraint=None,
+        bias_constraint=None,
+        kq_conf: None | QuantizerConfig = None,
+        iq_conf: None | QuantizerConfig = None,
+        bq_conf: None | QuantizerConfig = None,
+        **kwargs,
+    ):
+        kwargs = gather_vars_to_kwargs('self')
+        super().__init__(**kwargs)
 
 
-class QPointwiseConv2D(QConv2D):
-    """QConv2D with a 1x1 kernel: mixes channels at every pixel."""
+class QBaseSeparableConv(QLayerBase):
+    """Separable convolution as two QConv layers in series: a QDepthwiseConv (`depthwise`, without bias) and a 1x1
+    QConv (`pointwise`). The input quantizer of the pointwise conv (pq) quantizes the depthwise result, so the
+    intermediate tensor has a definite fixed-point type. Both sublayers count their own EBOPs."""
 
-    def __init__(self, filters, strides=(1, 1), padding='valid', **kwargs):
-        kernel_size = _pointwise_kernel_size(kwargs, 2)
-        super().__init__(filters, kernel_size, strides=strides, padding=padding, **kwargs)
+    _depthwise_cls: type
+    _pointwise_cls: type
+
+    def __init__(
+        self,
+        filters,
+        kernel_size,
+        strides,
+        padding,
+        data_format,
+        dilation_rate,
+        depth_multiplier,
+        activation,
+        use_bias,
+        depthwise_initializer,
+        pointwise_initializer,
+        bias_initializer,
+        depthwise_regularizer,
+        pointwise_regularizer,
+        bias_regularizer,
+        activity_regularizer,
+        depthwise_constraint,
+        pointwise_constraint,
+        bias_constraint,
+        dkq_conf: None | QuantizerConfig = None,
+        pkq_conf: None | QuantizerConfig = None,
+        iq_conf: None | QuantizerConfig = None,
+        pq_conf: None | QuantizerConfig = None,
+        bq_conf: None | QuantizerConfig = None,
+        parallelization_factor=-1,
+        **kwargs,
+    ):
+        super().__init__(activity_regularizer=activity_regularizer, **kwargs)
+        common = {
+            'enable_ebops': self.enable_ebops,
+            'beta0': self._beta0,
+            'enable_oq': False,
+            'parallelization_factor': parallelization_factor,
+        }
+        self._depthwise = self._depthwise_cls(
+            kernel_size,
+            strides=strides,
+            padding=padding,
+            depth_multiplier=depth_multiplier,
+            data_format=data_format,
+            dilation_rate=dilation_rate,
+            use_bias=False,
+            depthwise_initializer=depthwise_initializer,
+            depthwise_regularizer=depthwise_regularizer,
+            depthwise_constraint=depthwise_constraint,
+            kq_conf=dkq_conf,
+            iq_conf=iq_conf,
+            enable_iq=self.enable_iq,
+            name=f'{self.name}_depthwise',
+            **common,
+        )
+        self._pointwise = self._pointwise_cls(
+            filters,
+            1,
+            data_format=data_format,
+            activation=activation,
+            use_bias=use_bias,
+            kernel_initializer=pointwise_initializer,
+            bias_initializer=bias_initializer,
+            kernel_regularizer=pointwise_regularizer,
+            bias_regularizer=bias_regularizer,
+            kernel_constraint=pointwise_constraint,
+            bias_constraint=bias_constraint,
+            kq_conf=pkq_conf,
+            iq_conf=pq_conf,
+            bq_conf=bq_conf,
+            enable_iq=True,
+            name=f'{self.name}_pointwise',
+            **common,
+        )
+        self.filters = filters
+        self.depth_multiplier = depth_multiplier
+        self.parallelization_factor = parallelization_factor
+
+    @property
+    def depthwise(self):
+        return self._depthwise
+
+    @property
+    def pointwise(self):
+        return self._pointwise
+
+    @property
+    def dkq(self):
+        return self._depthwise.kq
+
+    @property
+    def pkq(self):
+        return self._pointwise.kq
+
+    @property
+    def pq(self):
+        return self._pointwise.iq
+
+    @property
+    def bq(self):
+        return self._pointwise.bq
+
+    def build(self, input_shape):
+        self._depthwise.build(input_shape)
+        self._pointwise.build(self._depthwise.compute_output_shape(input_shape))
+        super().build(input_shape)
+
+    def compute_output_shape(self, input_shape):
+        return self._pointwise.compute_output_shape(self._depthwise.compute_output_shape(input_shape))
+
+    def call(self, inputs, training=None):
+        x = self._depthwise(inputs, training=training)
+        return self._pointwise(x, training=training)
+
+    def _post_build(self):
+        # The input quantizer is the depthwise sublayer's
+        for sublayer in self._flatten_layers():
+            assert sublayer.built, f'Sublayer {sublayer.name} is not built for {self.name}'
+
+    @property
+    def ebops(self):
+        return self._depthwise.ebops + self._pointwise.ebops  # type: ignore
+
+    def get_config(self):
+        config = super().get_config()
+        dw_config, pw_config = self._depthwise.get_config(), self._pointwise.get_config()
+        config.update(
+            {
+                'filters': self.filters,
+                'depth_multiplier': self.depth_multiplier,
+                'parallelization_factor': self.parallelization_factor,
+                'dkq_conf': self.dkq.config,
+                'pkq_conf': self.pkq.config,
+                'iq_conf': self._depthwise.iq.config if self.enable_iq else None,
+                'pq_conf': self.pq.config,
+                'bq_conf': self.bq.config if self.bq is not None else None,
+            }
+        )
+        for key in ('kernel_size', 'strides', 'padding', 'data_format', 'dilation_rate'):
+            config[key] = dw_config[key]
+        for key in ('initializer', 'regularizer', 'constraint'):
+            config[f'depthwise_{key}'] = dw_config[f'depthwise_{key}']
+            config[f'pointwise_{key}'] = pw_config[f'kernel_{key}']
+        for key in ('activation', 'use_bias', 'bias_initializer', 'bias_regularizer', 'bias_constraint'):
+            config[key] = pw_config[key]
+        return config
+
+
+class QSeparableConv1D(QBaseSeparableConv):
+    _depthwise_cls = QDepthwiseConv1D
+    _pointwise_cls = QConv1D
+
+    def __init__(
+        self,
+        filters,
+        kernel_size,
+        strides=1,
+        padding='valid',
+        data_format=None,
+        dilation_rate=1,
+        depth_multiplier=1,
+        activation=None,
+        use_bias=True,
+        depthwise_initializer='glorot_uniform',
+        pointwise_initializer='glorot_uniform',
+        bias_initializer='zeros',
+        depthwise_regularizer=None,
+        pointwise_regularizer=None,
+        bias_regularizer=None,
+        activity_regularizer=None,
+        depthwise_constraint=None,
+        pointwise_constraint=None,
+        bias_constraint=None,
+        dkq_conf: None | QuantizerConfig = None,
+        pkq_conf: None | QuantizerConfig = None,
+        iq_conf: None | QuantizerConfig = None,
+        pq_conf: None | QuantizerConfig = None,
+        bq_conf: None | QuantizerConfig = None,
+        **kwargs,
+    ):
+        kwargs = gather_vars_to_kwargs('self')
+        super().__init__(**kwargs)
+
+
+class QSeparableConv2D(QBaseSeparableConv):
+    _depthwise_cls = QDepthwiseConv2D
+    _pointwise_cls = QConv2D
+
+    def __init__(
+        self,
+        filters,
+        kernel_size,
+        strides=(1, 1),
+        padding='valid',
+        data_format=None,
+        dilation_rate=(1, 1),
+        depth_multiplier=1,
+        activation=None,
+        use_bias=True,
+        depthwise_initializer='glorot_uniform',
+        pointwise_initializer='glorot_uniform',
+        bias_initializer='zeros',
+        depthwise_regularizer=None,
+        pointwise_regularizer=None,
+        bias_regularizer=None,
+        activity_regularizer=None,
+        depthwise_constraint=None,
+        pointwise_constraint=None,
+        bias_constraint=None,
+        dkq_conf: None | QuantizerConfig = None,
+        pkq_conf: None | QuantizerConfig = None,
+        iq_conf: None | QuantizerConfig = None,
+        pq_conf: None | QuantizerConfig = None,
+        bq_conf: None | QuantizerConfig = None,
+        **kwargs,
+    ):
+        kwargs = gather_vars_to_kwargs('self')
+        super().__init__(**kwargs)
