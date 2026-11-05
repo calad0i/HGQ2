@@ -29,7 +29,7 @@ pip install HGQ2
 Consider install also `da4ml` or/and `hls4ml` for model conversion and synthesis:
 
 ```bash
-pip install da4ml>=0.3
+pip install da4ml>=0.6
 pip install hls4ml>=1.2.0
 ```
 

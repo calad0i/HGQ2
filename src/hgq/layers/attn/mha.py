@@ -2,16 +2,19 @@ import math
 from collections.abc import Sized
 from typing import Literal
 
+import keras
 from keras import ops
 from keras.initializers import Constant
 from keras.layers import Dropout, MultiHeadAttention
+from keras.saving import register_keras_serializable
 from keras.src.layers.attention.multi_head_attention import _build_attention_equation, _build_proj_equation
 
-from ..quantizer.config import QuantizerConfig
-from ..utils.misc import gather_vars_to_kwargs
-from .core.base import QLayerBase
-from .core.einsum_dense import QEinsumDense
-from .softmax import QSoftmax
+from ...quantizer.config import QuantizerConfig
+from ...utils.misc import gather_vars_to_kwargs
+from ..core.base import QLayerBase
+from ..core.einsum_dense import QEinsumDense
+from ..softmax import QSoftmax
+from ..table import QEinsumDenseT
 
 
 def _get_output_shape(output_rank, known_last_dims, input_shape):
@@ -62,7 +65,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         self._qkvo_bq_conf = qkvo_bq_conf or QuantizerConfig(place='bias')
         self._qkvo_oq_conf = qkvo_oq_conf or QuantizerConfig(place='datalane')
         self._softmax_iq_conf = softmax_iq_conf or QuantizerConfig(place='datalane')
-        self._softmax_exp_iq_conf = softmax_exp_iq_conf or QuantizerConfig(place='datalane')
+        self._softmax_exp_iq_conf = softmax_exp_iq_conf or QuantizerConfig(place='datalane', overflow_mode='SAT')
         self._softmax_exp_oq_conf = softmax_exp_oq_conf or QuantizerConfig(place='table')
         self._softmax_inv_iq_conf = softmax_inv_iq_conf or QuantizerConfig(place='datalane')
         self._softmax_inv_oq_conf = softmax_inv_oq_conf or QuantizerConfig(place='table')
@@ -71,6 +74,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         self.parallelization_factor = kwargs.pop('parallelization_factor')
         self._stable_softmax = kwargs.pop('stable_softmax')
         self._fuse = kwargs.pop('fuse', 'none').lower()
+        self._inverse_sqrt_key_dim = 1.0 / math.sqrt(float(key_dim))
 
         super().__init__(**kwargs)
 
@@ -90,10 +94,14 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         )
         return common_kwargs
 
+    def compute_output_spec(self, query, value=None, key=None, *args, **kwargs):
+        value = query if value is None else value
+        return super().compute_output_spec(*args, query=query, value=value, key=key, **kwargs)
+
     def build(
         self,
         query_shape,
-        value_shape,
+        value_shape=None,
         key_shape=None,
     ):
         """Builds layers and variables.
@@ -102,7 +110,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         ----------
         query_shape : tuple
             Shape of the `query` tensor.
-        value_shape : tuple
+        value_shape : tuple, optional
             Shape of the `value` tensor.
         key_shape : tuple, optional
             Shape of the `key` tensor.
@@ -111,14 +119,19 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         # Copied and modified from keras MultiHeadAttention, substituted
         # EinsumDense with QEinsumDense and added sequence length (shape) to its
         # output shape when initializing, if known.
+        value_shape = query_shape if value_shape is None else value_shape
         key_shape = value_shape if key_shape is None else key_shape
 
-        # if query_shape[-1] != value_shape[-1]:
-        #     raise ValueError(
-        #         "The last dimension of `query_shape` and `value_shape` "
-        #         f"must be equal, but are {query_shape[-1]}, {value_shape[-1]}. "
-        #         "Received: query_shape={query_shape}, value_shape={value_shape}"
-        #     )
+        if self._fuse == 'qkv':
+            assert query_shape == value_shape == key_shape, (
+                'For fuse=qkv, query, key and value must have the same shape',
+                f'but got query_shape={query_shape}, value_shape={value_shape} and key_shape={key_shape}.',
+            )
+        if self._fuse == 'kv':
+            assert value_shape == key_shape, (
+                'For fuse=kv, key and value must have the same shape',
+                f'but got value_shape={value_shape} and key_shape={key_shape}.',
+            )
 
         if value_shape[1:-1] != key_shape[1:-1]:
             raise ValueError(
@@ -189,15 +202,15 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         )
         self._value_dense.build(value_shape)
 
-        if self._fuse == 'qkv':
+        if self._fuse == 'qkv' and self.enable_iq:
             self._query_dense._iq = self._value_dense._iq
-        if self._fuse in ('qkv', 'kv'):
+            self._query_dense._enable_iq = True
+        if self._fuse in ('qkv', 'kv') and self.enable_iq:
             self._key_dense._iq = self._value_dense._iq
+            self._key_dense._enable_iq = True
 
         self._query_dense.build(query_shape)
-        self._query_dense._enable_iq = True
         self._key_dense.build(key_shape)
-        self._key_dense._enable_iq = True
 
         # Builds the attention computations for multi-head dot product
         # attention.  These computations could be wrapped into the keras
@@ -298,7 +311,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         # Copied and modified from keras MultiHeadAttention, substituted Softmax with QSoftmax.
         if self._attention_axes is None:
             self._attention_axes = tuple(range(1, rank - 2))
-        else:
+        elif not isinstance(self._attention_axes, tuple):
             self._attention_axes = tuple(self._attention_axes)
         (
             self._dot_product_equation,
@@ -311,7 +324,6 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 attn_scores_rank,
             ),
         )
-        _inverse_sqrt_key_dim = 1.0 / math.sqrt(float(self._key_dim))
         self._softmax = QSoftmax(
             enable_oq=True,
             axis=norm_axes,
@@ -324,7 +336,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
             inv_oq_conf=self._softmax_inv_oq_conf,
             oq_conf=self._softmax_oq_conf,
             allow_heterogeneous_table=self._softmax_allow_heterogeneous_table,
-            input_scaler=_inverse_sqrt_key_dim,
+            input_scaler=self._inverse_sqrt_key_dim,
             enable_ebops=self.enable_ebops,
         )
         self._dropout_layer = Dropout(
@@ -371,10 +383,12 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         for sublayer in self._flatten_layers():
             assert sublayer.built, f'Sublayer {sublayer.name} is not built for {self.name}'
 
-    def _compute_ebops(self, query_shape, value_shape, key_shape=None):
+    def _compute_ebops(self, query_shape, value_shape=None, key_shape=None):
         Q_shape = (1,) + self._query_dense.full_output_shape[1:]
         K_shape = (1,) + self._key_dense.full_output_shape[1:]
         V_shape = (1,) + self._value_dense.full_output_shape[1:]
+
+        value_shape = query_shape if value_shape is None else value_shape
         attn_score_shape = (1, self._num_heads, *query_shape[1:-1], *value_shape[1:-1])
 
         # PF not supported for MHA for now.
@@ -402,9 +416,9 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         return ebops
 
     @property
-    def ebops(self) -> int:
+    def ebops(self):
         if self._ebops is None:
-            return 0
+            return ops.cast(0, 'uint32')
         ebops = sum(
             (  # type: ignore
                 self._query_dense.ebops,
@@ -412,15 +426,15 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
                 self._value_dense.ebops,
                 self._softmax.ebops,
                 self._output_dense.ebops,
-                ops.convert_to_tensor(self._ebops),
+                ops.convert_to_tensor(self._ebops),  # type: ignore
             )
         )
-        return round(ops.convert_to_numpy(ebops).item())  # type: ignore
+        return ebops  # type: ignore
 
     def call(
         self,
         query,
-        value,
+        value=None,
         key=None,
         query_mask=None,
         value_mask=None,
@@ -432,6 +446,8 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
     ):
         # Adapted from _compute_attention in keras 3.5.0
 
+        if value is None:
+            value = query
         if key is None:
             key = value
 
@@ -519,3 +535,217 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         # `context_layer` = [B, T, N, H]
         attention_output = ops.einsum(self._combine_equation, final_attn_scores, value)
         return attention_output, attention_scores
+
+
+@register_keras_serializable(package='hgq')
+class QMultiHeadAttentionT(QMultiHeadAttention):
+    """Table-projection multi-head attention.
+
+    The attention score path is inherited from :class:`QMultiHeadAttention`.
+    Query, key, value, and output projections are owned by :class:`QEinsumDenseT`
+    table layers.
+    """
+
+    def __init__(
+        self,
+        num_heads,
+        key_dim,
+        value_dim=None,
+        dropout=0.0,
+        use_bias=True,
+        output_shape=None,
+        attention_axes=None,
+        kernel_initializer='glorot_uniform',
+        bias_initializer='zeros',
+        kernel_regularizer=None,
+        bias_regularizer=None,
+        activity_regularizer=None,
+        kernel_constraint=None,
+        bias_constraint=None,
+        seed=None,
+        qkvo_iq_conf: QuantizerConfig | None = None,
+        qkvo_toq_conf: QuantizerConfig | None = None,
+        qkvo_oq_conf: QuantizerConfig | None = None,
+        softmax_iq_conf: QuantizerConfig | None = None,
+        softmax_exp_iq_conf: QuantizerConfig | None = None,
+        softmax_exp_oq_conf: QuantizerConfig | None = None,
+        softmax_inv_iq_conf: QuantizerConfig | None = None,
+        softmax_inv_oq_conf: QuantizerConfig | None = None,
+        softmax_oq_conf: QuantizerConfig | None = None,
+        stable_softmax=True,
+        softmax_allow_heterogeneous_table: bool = False,
+        parallelization_factor=-1,
+        n_hl: int = 1,
+        d_hl: int = 8,
+        subnn_activation='tanh',
+        table_spec: int | tuple[int, int] = (6, 5),
+        batch_norm: bool = False,
+        bn_center: bool = True,
+        bn_scale: bool = True,
+        bn_momentum: float = 0.99,
+        bn_epsilon: float = 0.001,
+        **kwargs,
+    ):
+        kwargs = gather_vars_to_kwargs(
+            'self|qkvo_toq_conf|n_hl|d_hl|subnn_activation|table_spec|batch_norm|bn_.+',
+        )
+        self._qkvo_toq_conf = qkvo_toq_conf or QuantizerConfig(place='table')
+        self._table_n_hl = n_hl
+        self._table_d_hl = d_hl
+        self._table_subnn_activation = keras.activations.get(subnn_activation)
+        self._table_spec = (table_spec, table_spec) if isinstance(table_spec, int) else table_spec
+        self._table_batch_norm = batch_norm
+        self._table_bn_args = {
+            'center': bn_center,
+            'scale': bn_scale,
+            'momentum': bn_momentum,
+            'epsilon': bn_epsilon,
+        }
+        kwargs['fuse'] = 'none'
+        super().__init__(**kwargs)
+
+    def _make_table_dense(
+        self,
+        equation: str,
+        output_shape,
+        bias_axes,
+        name: str,
+        *,
+        enable_iq: bool,
+        enable_oq: bool,
+    ):
+        return QEinsumDenseT(
+            equation=equation,
+            output_shape=output_shape,
+            bias_axes=bias_axes,
+            n_hl=self._table_n_hl,
+            d_hl=self._table_d_hl,
+            subnn_activation=self._table_subnn_activation,
+            toq_conf=self._qkvo_toq_conf,
+            parallelization_factor=self.parallelization_factor,
+            batch_norm=self._table_batch_norm,
+            bn_center=self._table_bn_args['center'],
+            bn_scale=self._table_bn_args['scale'],
+            bn_momentum=self._table_bn_args['momentum'],
+            bn_epsilon=self._table_bn_args['epsilon'],
+            table_idxs=self._table_spec,
+            name=name,
+            dtype=self.dtype_policy,
+            enable_iq=enable_iq,
+            iq_conf=self._qkvo_iq_conf,
+            enable_oq=enable_oq,
+            oq_conf=self._qkvo_oq_conf,
+            enable_ebops=self.enable_ebops,
+            beta0=self._beta0.clone(),
+        )
+
+    def build(self, query_shape, value_shape=None, key_shape=None):
+        value_shape = query_shape if value_shape is None else value_shape
+        key_shape = value_shape if key_shape is None else key_shape
+
+        if value_shape[1:-1] != key_shape[1:-1]:
+            raise ValueError(
+                'All dimensions of `value` and `key`, except the last one, '
+                f'must be equal. Received: value_shape={value_shape} and '
+                f'key_shape={key_shape}',
+            )
+
+        query_rank = len(query_shape)
+        key_rank = len(key_shape)
+        value_rank = len(value_shape)
+
+        einsum_equation, bias_axes, output_rank = _build_proj_equation(query_rank - 1, bound_dims=1, output_dims=2)
+        self._query_dense = self._make_table_dense(
+            einsum_equation,
+            _get_output_shape(output_rank - 1, [self._num_heads, self._key_dim], query_shape),
+            bias_axes if self._use_bias else None,
+            'query',
+            enable_iq=self.enable_iq,
+            enable_oq=True,
+        )
+        einsum_equation, bias_axes, output_rank = _build_proj_equation(key_rank - 1, bound_dims=1, output_dims=2)
+        self._key_dense = self._make_table_dense(
+            einsum_equation,
+            _get_output_shape(
+                output_rank - 1,
+                [self._num_heads, self._key_dim],
+                key_shape,
+            ),
+            None,
+            'key',
+            enable_iq=self.enable_iq,
+            enable_oq=True,
+        )
+        einsum_equation, bias_axes, output_rank = _build_proj_equation(value_rank - 1, bound_dims=1, output_dims=2)
+        self._value_dense = self._make_table_dense(
+            einsum_equation,
+            _get_output_shape(output_rank - 1, [self._num_heads, self._value_dim], value_shape),
+            bias_axes if self._use_bias else None,
+            'value',
+            enable_iq=self.enable_iq,
+            enable_oq=True,
+        )
+        self._value_dense.build(value_shape)
+        self._query_dense.build(query_shape)
+        self._key_dense.build(key_shape)
+
+        self._build_attention(output_rank, (query_shape, value_shape, key_shape))
+
+        self._output_dense = self._make_output_dense(query_shape, {}, 'attention_output')
+        output_dense_input_shape = list(self._query_dense.compute_output_shape(query_shape))
+        output_dense_input_shape[-1] = self._value_dim
+        self._output_dense.build(tuple(output_dense_input_shape))
+
+        if self.enable_ebops:
+            self._beta = self.add_weight(name='beta', shape=(), initializer=self._beta0, trainable=False)
+            self._ebops = self.add_weight(name='ebops', shape=(), initializer=Constant(0.0), trainable=False, dtype='uint32')
+        else:
+            self._beta = None
+            self._ebops = None
+
+        self._dot_product_ebops_equation = self._dot_product_equation.split('->', 1)[0] + '->'
+        self._combine_ebops_equation = self._combine_equation.split('->', 1)[0] + '->'
+        self.built = True
+
+    def _make_output_dense(self, query_shape, common_kwargs, name=None):
+        del common_kwargs
+        query_rank = len(query_shape)
+        if self._output_shape:
+            if not isinstance(self._output_shape, Sized):
+                output_shape = [self._output_shape]
+            else:
+                output_shape = self._output_shape
+        else:
+            output_shape = [query_shape[-1]]
+        einsum_equation, bias_axes, output_rank = _build_proj_equation(
+            query_rank - 1, bound_dims=2, output_dims=len(output_shape)
+        )
+        return self._make_table_dense(
+            einsum_equation,
+            _get_output_shape(output_rank - 1, output_shape, query_shape),
+            bias_axes if self._use_bias else None,
+            name or 'attention_output',
+            enable_iq=True,
+            enable_oq=self.enable_oq,
+        )
+
+    def get_config(self):
+        config = super().get_config()
+        config.pop('qkvo_kq_conf', None)
+        config.pop('qkvo_bq_conf', None)
+        config.pop('fuse', None)
+        config.update(
+            {
+                'qkvo_toq_conf': self._qkvo_toq_conf,
+                'n_hl': self._table_n_hl,
+                'd_hl': self._table_d_hl,
+                'subnn_activation': self._table_subnn_activation,
+                'table_spec': self._table_spec,
+                'batch_norm': self._table_batch_norm,
+                'bn_center': self._table_bn_args['center'],
+                'bn_scale': self._table_bn_args['scale'],
+                'bn_momentum': self._table_bn_args['momentum'],
+                'bn_epsilon': self._table_bn_args['epsilon'],
+            }
+        )
+        return config

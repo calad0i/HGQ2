@@ -8,6 +8,7 @@ class GlobalConfig(TypedDict):
     enable_ebops: bool
     enable_oq: bool
     enable_iq: bool
+    enable_sq: bool
 
 
 global_config = GlobalConfig(
@@ -15,6 +16,7 @@ global_config = GlobalConfig(
     enable_ebops=True,
     enable_oq=False,
     enable_iq=True,
+    enable_sq=True,
 )
 
 

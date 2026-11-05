@@ -1,11 +1,10 @@
 from ..quantizer import Quantizer
-from .activation import QUnaryFunctionLUT
+from .activation import QAffinedUnaryFunctionLUT, QUnaryFunctionLUT
+from .attn import QLinformerAttention, QLinformerAttentionT, QMultiHeadAttention, QMultiHeadAttentionT
 from .batch_normalization import QBatchNormalization
 from .conv import QConv1D, QConv2D, QConv3D, QPointwiseConv1D, QPointwiseConv2D
 from .core import *
 from .einsum_dense_batchnorm import QEinsumDenseBatchnorm
-from .linformer_attention import QLinformerAttention
-from .multi_head_attention import QMultiHeadAttention
 from .ops import *
 from .pooling import *
 from .pooling import (
@@ -46,11 +45,13 @@ from .pooling import (
 )
 from .rnn import QGRU, QSimpleRNN
 from .separable_conv import QDepthwiseConv1D, QDepthwiseConv2D, QSeparableConv1D, QSeparableConv2D
+from .snn import QLIF, QLIFCell, QSimpleSNN, QSimpleSNNCell
 from .softmax import QSoftmax
-from .table import QConvT1D, QConvT2D, QDenseT
+from .table import QConvT1D, QConvT2D, QDenseT, QEinsumDenseT
 
 __all__ = [
     'QUnaryFunctionLUT',
+    'QAffinedUnaryFunctionLUT',
     'QBatchNormalization',
     'QConv1D',
     'QConv2D',
@@ -78,7 +79,9 @@ __all__ = [
     'QMultiply',
     'QSubtract',
     'QLinformerAttention',
+    'QLinformerAttentionT',
     'QMultiHeadAttention',
+    'QMultiHeadAttentionT',
     'QBatchNormDense',
     'QDense',
     'QMaxPool1D',
@@ -107,7 +110,12 @@ __all__ = [
     'QGlobalMaxPooling3D',
     'QSimpleRNN',
     'QGRU',
+    'QSimpleSNNCell',
+    'QLIFCell',
+    'QSimpleSNN',
+    'QLIF',
     'QDenseT',
+    'QEinsumDenseT',
     'QConvT1D',
     'QConvT2D',
 ]

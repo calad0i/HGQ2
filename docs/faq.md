@@ -14,10 +14,11 @@ The primary usage for HGQ is to quantize your model for FPGA deployment. Current
 
 For the training part, you can use HGQ as a drop-in replacement for `Keras` layers. For the deployment part, the following conditions should be met:
 
-1. Your model is compatible with `hls4ml` or `da4ml` (i.e., no dynamic shapes, static dataflow, etc.)
-2. If using `hls4ml`: You are using `Vitis` or `Vivado` or `OneAPI` (preliminary support) as your FPGA backend.
+1. Your model is compatible with `da4ml` or `hls4ml` (i.e., no dynamic shapes, static dataflow, etc.)
+   1. Almost all layers are supported by `da4ml`; most layers are supported by `hls4ml` but some may not be supported under certain configurations.
+   2. If using `hls4ml`: You are using `Vitis` or `Vivado` or `OneAPI` (preliminary support) as your FPGA backend.
    - other backend **MAY** work if you don't use heterogeneous activation quantization.
-3. Your model is representable in HGQ2 layers
+2. Your model is representable in HGQ2 layers
    - Some layers in HGQ2 are not supported by `hls4ml` under certain configurations.
    - `da4ml`'s layer support is more limited than `hls4ml`, but supports more fine-grained operations (e.g., take arbitrary elements from a tensor, free-rearranging, etc.)
 

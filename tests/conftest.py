@@ -1,5 +1,6 @@
 import os
 import random
+import time
 from pathlib import Path
 
 import keras
@@ -46,9 +47,30 @@ def configure_backend():
 
             torch.set_float32_matmul_precision('highest')
         case 'jax':
-            pass
+            import jax
+
+            jax.config.update('jax_disable_jit', True)
+            jax.config.update('jax_default_matmul_precision', 'float32')
         case _:
             raise ValueError(f'Unknown backend: {backend}')
+
+
+_last_jax_cache_clear = 0.0
+
+
+@pytest.fixture(autouse=True)
+def _jax_cache_cleanup():
+    """After each test, clear JAX compilation cache if 30s+ since last clear."""
+    yield
+    if keras.backend.backend() != 'jax':
+        return
+    global _last_jax_cache_clear
+    now = time.monotonic()
+    if now - _last_jax_cache_clear >= 30:
+        import jax
+
+        jax.clear_caches()
+        _last_jax_cache_clear = now
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -79,3 +101,20 @@ def pytest_sessionfinish(session, exitstatus):
     for path in root.glob('*'):
         if path.is_dir() and not any(path.iterdir()):
             path.rmdir()
+
+
+def pytest_addoption(parser):
+    parser.addoption('--skip-slow', action='store_true', default=False, help='skip slow tests')
+
+
+def pytest_configure(config):
+    config.addinivalue_line('markers', 'slow: mark test as slow to run')
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption('--skip-slow'):
+        # --runslow given in cli: do not skip slow tests
+        skip_slow = pytest.mark.skip(reason='need --runslow option to run')
+        for item in items:
+            if 'slow' in item.keywords:
+                item.add_marker(skip_slow)

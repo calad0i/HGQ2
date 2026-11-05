@@ -1,4 +1,5 @@
 import keras
+import numpy as np
 from keras import ops
 from keras.constraints import Constraint
 from keras.initializers import Constant, Initializer
@@ -125,8 +126,9 @@ class FixedPointQuantizerBase(TrainableQuantizerBase):
         if not self.built:
             return f'{self.__class__.__name__}({self.round_mode}, {self.overflow_mode}, name={self.name}, built=False)'
         k, i, f = self.k, self.i, self.f
-        kstd, istd, fstd = float(ops.std(k)), float(ops.std(i)), float(ops.std(f))  # type: ignore
-        kmean, imean, fmean = float(ops.mean(k)), float(ops.mean(i)), float(ops.mean(f))  # type: ignore
+        k, i, f = ops.convert_to_numpy(k), ops.convert_to_numpy(i), ops.convert_to_numpy(f)
+        kstd, istd, fstd = float(np.std(k)), float(np.std(i)), float(np.std(f))  # type: ignore
+        kmean, imean, fmean = float(np.mean(k)), float(np.mean(i)), float(np.mean(f))  # type: ignore
         kstr = f'{kmean:.2f}±{kstd:.2f}'
         istr = f'{imean:.2f}±{istd:.2f}'
         fstr = f'{fmean:.2f}±{fstd:.2f}'
@@ -143,9 +145,8 @@ class FixedPointQuantizerBase(TrainableQuantizerBase):
         i = self.bw_mapper.bw_to_x(i, ops.shape(inputs))
         f = self.bw_mapper.bw_to_x(f, ops.shape(inputs))
         ret = self.stateless_quantizer(inputs, k, i, f, training is True, self.seed_gen)
-        if not training:
-            ret = ops.where(k + i + f > 0, ret, ops.zeros_like(ret))  # type: ignore
-        return ret
+        _ret = ops.where(k + i + f > 0, ret, ops.zeros_like(ret))  # type: ignore
+        return ops.stop_gradient(_ret - ret) + ret  # type: ignore
 
 
 class FixedPointQuantizerKBI(FixedPointQuantizerBase):
@@ -405,9 +406,9 @@ class FixedPointQuantizerKIF(FixedPointQuantizerBase):
             if training or training == 'tracing':  # noqa: E712, training maybe a special wrapper object
                 _new_i = self.get_minimal_i(rinputs)
                 if training:
-                    new_i = ops.stop_gradient(ops.maximum(self._i - self.i_decay_speed, _new_i))  # type: ignore
                     if self._i.constraint is not None:
                         _new_i = self._i.constraint(_new_i)
+                    new_i = ops.stop_gradient(ops.maximum(self._i - self.i_decay_speed, _new_i))  # type: ignore
                     self._i.assign(new_i)
                 else:
                     # tracing

@@ -23,7 +23,7 @@ class BetaScheduler(Callback):
 
         beta = self.beta_fn(epoch)
         for layer in self.model._flatten_layers():
-            if hasattr(layer, '_beta'):
+            if getattr(layer, '_beta', None) is not None:
                 layer._beta.assign(ops.convert_to_tensor(beta, dtype=layer._beta.dtype))
 
     def on_epoch_end(self, epoch, logs=None):

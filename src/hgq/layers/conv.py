@@ -1,3 +1,5 @@
+from math import prod
+
 from keras import ops
 from keras.src.layers.convolutional.base_conv import BaseConv
 
@@ -57,6 +59,16 @@ class QBaseConv(QLayerBaseSingleInput, BaseConv):
             assert self.bq is not None
             self.bq.build(ops.shape(self.bias))
 
+        outputs_shape = self.compute_output_shape(input_shape)
+        if None in outputs_shape[1:]:
+            self.n_parallel = None
+        else:
+            self.n_parallel = prod(outputs_shape[1:-1]) if self.data_format == 'channels_last' else prod(outputs_shape[2:])
+
+        if self.parallelization_factor <= 0:
+            assert self.n_parallel is not None
+            self.parallelization_factor = self.n_parallel
+
     def call(self, inputs, training=None):
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
@@ -79,19 +91,8 @@ class QBaseConv(QLayerBaseSingleInput, BaseConv):
     def _compute_ebops(self, shape):
         bw_inp = self.iq.bits_(shape)
         bw_ker = self.kq.bits_(ops.shape(self.kernel))
-        if self.parallelization_factor < 0:
-            ebops = ops.sum(self.convolution_op(bw_inp, bw_ker))
-        else:
-            reduce_axis_kernel = tuple(range(0, self.rank + 1))
-            if self.data_format == 'channels_last':
-                reduce_axis_input = reduce_axis_kernel
-            else:
-                reduce_axis_input = (0,) + tuple(range(2, self.rank + 2))
-
-            bw_inp = ops.max(bw_inp, axis=reduce_axis_input)  # Keep only maximum per channel
-            reduce_axis_kernel = tuple(range(0, self.rank))
-            bw_ker = ops.sum(bw_ker, axis=reduce_axis_kernel)  # Keep only sum per channel
-            ebops = ops.sum(bw_inp[:, None] * bw_ker)  # type: ignore
+        ebops = ops.sum(self.convolution_op(bw_inp, bw_ker))
+        ebops *= self.parallelization_factor / self.n_parallel  # type: ignore
 
         if self.bq is not None:
             size = ops.cast(ops.prod(shape[:-1]) * self.filters, self.dtype)
@@ -159,35 +160,16 @@ class QConv1D(QBaseConv):
         return causal_padding
 
     def call(self, inputs, training=None):
-        padding = self.padding
-        if self.padding == 'causal':
+        is_causal = self.padding == 'causal'
+
+        if is_causal:
             # Apply causal padding to inputs.
             inputs = ops.pad(inputs, self._compute_causal_padding())
-            padding = 'valid'
-
-        qinputs = self.iq(inputs, training=training)
-        qkernel = self.kq(self._kernel, training=training)
-
-        outputs = ops.conv(
-            qinputs,
-            qkernel,
-            strides=list(self.strides),  # type: ignore
-            padding=padding,
-            dilation_rate=self.dilation_rate,  # type: ignore
-            data_format=self.data_format,
-        )
-
-        if self.use_bias:
-            if self.data_format == 'channels_last':
-                bias_shape = (1,) * (self.rank + 1) + (self.filters,)
-            else:
-                bias_shape = (1, self.filters) + (1,) * self.rank
-            qbias = self.bq(self.bias, training=training)  # type: ignore
-            qbias = ops.reshape(qbias, bias_shape)
-            outputs += qbias  # type: ignore
-        if self.activation is not None:
-            return self.activation(outputs)
-        return outputs
+            self.padding = 'valid'
+        ret = super().call(inputs, training=training)
+        if is_causal:
+            self.padding = 'causal'
+        return ret
 
 
 class QConv2D(QBaseConv):
@@ -223,10 +205,10 @@ class QConv3D(QBaseConv):
         self,
         filters,
         kernel_size,
-        strides=(1, 1),
+        strides=(1, 1, 1),
         padding='valid',
         data_format=None,
-        dilation_rate=(1, 1),
+        dilation_rate=(1, 1, 1),
         groups=1,
         activation=None,
         use_bias=True,
