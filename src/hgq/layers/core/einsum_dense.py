@@ -7,6 +7,19 @@ from ...utils.misc import gather_vars_to_kwargs
 from .base import QLayerBaseSingleInput
 
 
+def _einsum_free0_size(equation: str, input_shape: tuple[int | None, ...]) -> int:
+    _inp, _ker_out = equation.split(',', 1)
+    _ker, _out = _ker_out.split('->', 1)
+    elided_size = len(input_shape) - len(_inp) + 3
+    _inp = _inp.replace('...', '?' * elided_size)
+    n_parallel = 1
+    for ax, dim in zip(_inp[1:], input_shape[1:]):
+        if ax not in _ker and (ax in _out or ax == '?'):
+            assert dim is not None, f'Cannot determine input loop size for einsum eq: {equation} with input shape {input_shape}'
+            n_parallel *= dim
+    return n_parallel
+
+
 class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
     def __init__(
         self,
@@ -20,20 +33,20 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
         bias_regularizer=None,
         kernel_constraint=None,
         bias_constraint=None,
-        ebops_scaler: float = 1.0,
         kq_conf: None | QuantizerConfig = None,
         iq_conf: None | QuantizerConfig = None,
         bq_conf: None | QuantizerConfig = None,
+        parallelization_factor: int = -1,
         **kwargs,
     ):
-        kwargs = gather_vars_to_kwargs('self|kq_conf|bq_conf|ebops_scaler')
+        kwargs = gather_vars_to_kwargs('self|kq_conf|bq_conf|parallelization_factor')
         super().__init__(lora_rank=None, **kwargs)
 
         kq_conf = kq_conf or QuantizerConfig('default', 'weight')
         self._kq = Quantizer(kq_conf, name=f'{self.name}_kq')
         bq_conf = bq_conf or QuantizerConfig('default', 'bias')
         self._bq = None if bias_axes is None else Quantizer(bq_conf, name=f'{self.name}_bq')
-        self.ebops_scaler = ebops_scaler
+        self.parallelization_factor = parallelization_factor
 
     @property
     def kq(self):
@@ -46,11 +59,16 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
     def build(self, input_shape):
         super().build(input_shape)
 
+        self.n_parallel = _einsum_free0_size(self.equation, input_shape)
+        if self.parallelization_factor < 0:
+            self.parallelization_factor = self.n_parallel
+
         self.kq.build(ops.shape(self._kernel))
         if self.bias is not None:
             assert self.bq is not None
             self.bq.build(ops.shape(self.bias))
         self.ebops_equation = self.equation.split('->')[0] + '->'
+        self.full_output_shape = self.compute_output_shape(input_shape)
 
     def call(self, inputs, training=None):
         qkernel = self.kq(self._kernel, training=training)
@@ -66,7 +84,6 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
         return x
 
     def _compute_ebops(self, shape):
-        # shape = shapes[0]
         bw_inp = self.iq.bits_(shape)
         bw_ker = self.kq.bits_(ops.shape(self.kernel))
         ebops = ops.einsum(self.ebops_equation, bw_inp, bw_ker)
@@ -74,7 +91,7 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
             bw_bias = self.bq.bits_(ops.shape(self.bias))
             size = ops.cast(ops.prod(self.full_output_shape[1:]), self.dtype)
             ebops = ebops + ops.mean(bw_bias) * size  # type: ignore
-        return ebops * self.ebops_scaler  # type: ignore
+        return ebops * self.parallelization_factor / self.n_parallel  # type: ignore
 
     def get_config(self):
         config = super().get_config()
@@ -82,6 +99,7 @@ class QEinsumDense(QLayerBaseSingleInput, EinsumDense):
             {
                 'kq_conf': self.kq.config,
                 'bq_conf': self.bq.config if self.bq is not None else None,
+                'parallelization_factor': self.parallelization_factor,
             }
         )
         return config

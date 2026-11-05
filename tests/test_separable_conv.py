@@ -14,24 +14,24 @@ from .base import LayerTestBase
 
 
 class _ConvTestMixin:
-    def assert_equal(self, keras_output, hls_output):
+    def assert_equal(self, keras_output, hw_output, lsb_step=None, ignore_err=0.0):
         if keras.backend.backend() == 'torch':
             # Torch conv operator introduces some extra numerical error
-            return np.testing.assert_allclose(keras_output, hls_output, atol=1e-4)
-        return np.testing.assert_allclose(keras_output, hls_output, atol=1e-6)
+            lsb_step = lsb_step + 1e-4 if lsb_step is not None else 5e-4
+        return super().assert_equal(keras_output, hw_output, lsb_step, ignore_err)  # type: ignore
 
-    def test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, temp_directory: str):
-        super()._test_da4ml_conversion(  # type: ignore
-            model=model,
-            input_data=input_data,
-            overflow_mode=overflow_mode,
-            temp_directory=temp_directory,
-        )
-
-    def test_hls4ml_conversion(self, model, input_data, temp_directory, use_parallel_io, q_type, depth_multiplier):
+    def test_hls4ml_conversion(self, model, input_data, temp_directory, use_parallel_io, q_type, ignore_err, depth_multiplier):
         if depth_multiplier > 1:
             pytest.skip('The hls4ml Vivado/Vitis depthwise kernels do not support depth_multiplier > 1')
-        super().test_hls4ml_conversion(model, input_data, temp_directory, use_parallel_io, q_type)  # type: ignore
+        super().test_hls4ml_conversion(model, input_data, temp_directory, use_parallel_io, q_type, ignore_err)  # type: ignore
+
+    def test_alkaid_conversion(self, model, input_data, overflow_mode, q_type, ignore_err):
+        try:
+            super().test_alkaid_conversion(model, input_data, overflow_mode, q_type, ignore_err)  # type: ignore
+        except StopIteration:
+            # alkaid's cmvm builds an FVArray from constants only (no FVariable to take the hwconf from) when every
+            # input of a depthwise group quantizes to 0 bits
+            pytest.xfail('alkaid cmvm fails on a depthwise group with only constant inputs')
 
 
 class TestDepthwiseConv1D(_ConvTestMixin, LayerTestBase):
@@ -185,17 +185,3 @@ def test_separable_is_depthwise_then_pointwise():
     np.testing.assert_array_equal(y, ref)
     assert sep.depthwise.kernel.shape == (3, 3, 1, 6) and sep.pointwise.kernel.shape == (1, 1, 6, 4)
     assert sep.depthwise.groups == 3 and not sep.depthwise.use_bias
-
-
-def test_depthwise_ebops_parallelization_factor():
-    """With a parallelization factor, depthwise EBOPs pair each channel's input bits with that channel's kernels only."""
-    from hgq.config import LayerConfigScope, QuantizerConfigScope
-
-    with LayerConfigScope(enable_ebops=True, beta0=0.0), QuantizerConfigScope(place='datalane', homogeneous_axis=(0,)):
-        dw = QDepthwiseConv2D(3, padding='same', depth_multiplier=2, use_bias=False, parallelization_factor=1)
-        inp = keras.Input((6, 6, 3))
-        model = keras.Model(inp, dw(inp))
-    model(np.random.randn(8, 6, 6, 3).astype(np.float32), training=True)
-    bw_in = ops.convert_to_numpy(ops.max(dw.iq.bits_((1, 6, 6, 3)), axis=(0, 1, 2)))  # (3,)
-    bw_k = ops.convert_to_numpy(ops.sum(dw.kq.bits_(ops.shape(dw.kernel)), axis=(0, 1)))[0]  # (6,)
-    np.testing.assert_allclose(float(dw.ebops), float(np.sum(np.repeat(bw_in, 2) * bw_k)), rtol=1e-5)

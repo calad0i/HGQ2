@@ -5,10 +5,19 @@ import pytest
 from keras import layers, ops
 
 from hgq.config import QuantizerConfigScope
-from hgq.layers import QLayerBase
+from hgq.layers import QLayerBase, Quantizer
 from hgq.layers.ops import QAdd, QAveragePow2, QDot, QEinsum, QMaximum, QMeanPow2, QMinimum, QMultiply, QSubtract, QSum
 
 from .base import LayerTestBase
+
+
+class TestQuantizer(LayerTestBase):
+    layer_cls = Quantizer
+    hls4ml_not_supported = True  # supported, but can't convert single quantizer
+
+    @pytest.fixture(params=[(12,)])
+    def input_shapes(self, request):
+        return request.param
 
 
 class MergeOpsBase(LayerTestBase):
@@ -138,7 +147,7 @@ class TestQAveragePow2(MergeOpsBase):
 #         np.testing.assert_allclose(r_hgq, r_keras)
 
 
-class TestSum(LayerTestBase):
+class TestQSum(LayerTestBase):
     layer_cls = QSum
     hls4ml_not_supported = True
 
@@ -170,7 +179,7 @@ class TestSum(LayerTestBase):
         np.testing.assert_allclose(r_hgq, r_keras)
 
 
-class TestMeanPow2(TestSum):
+class TestMeanPow2(TestQSum):
     layer_cls = QMeanPow2
     hls4ml_not_supported = True
 

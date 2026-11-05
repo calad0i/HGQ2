@@ -28,7 +28,7 @@ class TestConv1D(LayerTestBase):
     def input_shapes(self):
         return (6, 2)
 
-    @pytest.fixture(params=['valid', 'same'])
+    @pytest.fixture(params=['valid', 'same', 'causal'])
     def padding(self, request):
         return request.param
 
@@ -36,19 +36,26 @@ class TestConv1D(LayerTestBase):
     def layer_kwargs(self, ch_out, conv_params):
         return {'filters': ch_out, **conv_params}
 
-    def assert_equal(self, keras_output, hls_output):
+    def assert_equal(self, keras_output, hw_output, lsb_step=None, ignore_err=0.0):
         if keras.backend.backend() == 'torch':
             # Torch conv operator introduces some extra numerical error
-            return np.testing.assert_allclose(keras_output, hls_output, atol=1e-4)
-        return np.testing.assert_allclose(keras_output, hls_output, atol=1e-6)
+            lsb_step = lsb_step + 1e-4 if lsb_step is not None else 5e-4
+        return super().assert_equal(keras_output, hw_output, lsb_step, ignore_err)
 
-    def test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, temp_directory: str):
-        super()._test_da4ml_conversion(
-            model=model,
-            input_data=input_data,
-            overflow_mode=overflow_mode,
-            temp_directory=temp_directory,
-        )
+    @pytest.mark.slow
+    def test_hls4ml_conversion(  # type: ignore
+        self,
+        model: keras.Model,
+        input_data,
+        temp_directory: str,
+        use_parallel_io: bool,
+        q_type: str,
+        ignore_err: float,
+        padding: str,
+    ):
+        if padding == 'causal':
+            pytest.skip('Causal padding not supported in hls4ml conversion')
+        super().test_hls4ml_conversion(model, input_data, temp_directory, use_parallel_io, q_type, ignore_err)
 
 
 class TestConv2D(LayerTestBase):
@@ -81,22 +88,13 @@ class TestConv2D(LayerTestBase):
     def layer_kwargs(self, ch_out, conv_params):
         return {'filters': ch_out, **conv_params}
 
-    def assert_equal(self, keras_output, hls_output):
-        # Conv operations has some numerical error in ops.conv operations.
+    def assert_equal(self, keras_output, hw_output, lsb_step=None, ignore_err=0.0):
         if keras.backend.backend() == 'torch':
             # Torch conv operator introduces some extra numerical error
-            return np.testing.assert_allclose(keras_output, hls_output, atol=5e-4)
-        return np.testing.assert_allclose(keras_output, hls_output, atol=1e-6)
+            lsb_step = lsb_step + 1e-4 if lsb_step is not None else 5e-4
+        return super().assert_equal(keras_output, hw_output, lsb_step, ignore_err)
 
     def test_training(self, model: keras.Model, input_data: np.ndarray, overflow_mode, ch_out: int):
         if keras.backend.backend() == 'torch' and ch_out == 1:
             pytest.skip('Torch runtime error for unknown reason when ch_out is 1.')
         return super().test_training(model, input_data, overflow_mode)
-
-    def test_da4ml_conversion(self, model: keras.Model, input_data, overflow_mode: str, temp_directory: str):
-        super()._test_da4ml_conversion(
-            model=model,
-            input_data=input_data,
-            overflow_mode=overflow_mode,
-            temp_directory=temp_directory,
-        )

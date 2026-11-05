@@ -136,15 +136,17 @@ class QConvTBase(QDenseT):
         return self._toq
 
     def get_config(self):
-        config = {
-            'n_out': self.ch_out,
-            'n_hl': self.n_hl,
-            'd_hl': self.d_hl,
-            'subnn_activation': self.subnn_activation,
-            'activation': self.activation,
-            'toq_conf': self.toq.config,
-            **super().get_config(),
+        config = super().get_config()
+        config['filters'] = config.pop('n_out')
+        new_config = {
+            'kernel_size': self.kernel_size,
+            'strides': self.strides,
+            'padding': self.padding,
+            'data_format': self.data_format,
+            'dilation_rate': self.dilation_rate,
+            'groups': self.groups,
         }
+        config.update(new_config)
         return config
 
 

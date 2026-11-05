@@ -113,21 +113,43 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
 
     @property
     def qkernel(self):
-        return self.kq(self.kernel)
+        try:
+            return self._qkernel_cache
+        except AttributeError:
+            return self.kq(self.kernel)
 
     @property
     def qrecurrent_kernel(self):
-        return self.rkq(self.recurrent_kernel)
+        try:
+            return self._qrecurrent_kernel_cache
+        except AttributeError:
+            return self.rkq(self.recurrent_kernel)
 
     @property
     def qbias(self):
         if not self.use_bias:
-            return None
-        return self.bq(self.bias)  # type: ignore
+            raise AttributeError(f'bias has been disabled for {self.name}.')
+        assert self.bq is not None
+        try:
+            return self._qbias_cache
+        except AttributeError:
+            return self.bq(self.bias)
 
     @property
     def enable_sq(self):
         return self._enable_sq
+
+    def _set_weight_cache(self):
+        self._qkernel_cache = self.kq(self.kernel)
+        self._qrecurrent_kernel_cache = self.rkq(self.recurrent_kernel)
+        if self.use_bias:
+            self._qbias_cache = self.bq(self.bias)  # type: ignore
+
+    def _invalidate_weight_cache(self):
+        del self._qkernel_cache
+        del self._qrecurrent_kernel_cache
+        if self.use_bias:
+            del self._qbias_cache
 
     def __init__(
         self,
@@ -217,8 +239,6 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
         if training and rec_dp_mask is not None:
             prev_output = prev_output * rec_dp_mask
 
-        qkernel = self.kq(self.kernel, training=training)
-        qrecurrent_kernel = self.rkq(self.recurrent_kernel, training=training)
         if self.enable_sq:
             qstate = self.sq(prev_output, training=training)
         else:
@@ -226,11 +246,11 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
             qstate = prev_output
         qsequence = self.iq(sequence, training=training)
 
-        h = ops.matmul(qsequence, qkernel)
+        h = ops.matmul(qsequence, self.qkernel)
         if self.bias is not None:
-            h += self.bq(self.bias, training=training)  # type: ignore
+            h += self.qbias
 
-        output = h + ops.matmul(qstate, qrecurrent_kernel)  # type: ignore
+        output = h + ops.matmul(qstate, self.qrecurrent_kernel)  # type: ignore
 
         output = self.paq(output)
         output = self.activation(output)
@@ -275,12 +295,12 @@ class QSimpleRNNCell(QLayerBaseSingleInput, SimpleRNNCell):
         return self._enable_ebops and self.standalone
 
 
-def _is_wrap_quantizer(q: Quantizer) -> bool:
+def _is_jax_scan_unsafe_wrap_quantizer(q: Quantizer) -> bool:
     if not isinstance(q, Quantizer):
         return False
     if not isinstance(q.quantizer, FixedPointQuantizerBase):
         return False
-    return q.quantizer.overflow_mode == 'WRAP'
+    return q.quantizer.overflow_mode == 'WRAP' and q.quantizer.trainable
 
 
 @register_keras_serializable(package='hgq')
@@ -289,9 +309,8 @@ class QRNN(RNN, metaclass=QLayerMeta):
 
     def _set_unroll(self):
         backend = keras.backend.backend()
-        has_wrap_quantizers = any(_is_wrap_quantizer(layer) for layer in self._flatten_layers())
-        if backend == 'jax' and has_wrap_quantizers:
-            # JAX tracer issues when using jax scan with WRAP quantizers (range update is side effect)
+        has_scan_unsafe_wrap_quantizers = any(_is_jax_scan_unsafe_wrap_quantizer(layer) for layer in self._flatten_layers())
+        if backend == 'jax' and has_scan_unsafe_wrap_quantizers:
             # Force unrolling in this case
             if self.unroll is False:
                 warn('JAX backend does not support WRAP quantizers with rolled RNNs. Forcing unrolling.')
@@ -363,13 +382,31 @@ class QRNN(RNN, metaclass=QLayerMeta):
         config = deserialize_keras_object(config, custom_objects=custom_objects)
         return super().from_config(config)
 
+    @property
+    def ebops_factor(self):
+        return self.cell.ebops_factor
+
+    def call(
+        self,
+        sequences,
+        initial_state=None,
+        mask=None,
+        training=False,
+    ):
+        self.cell._set_weight_cache()
+        ret = super().call(sequences, initial_state=initial_state, mask=mask, training=training)
+        self.cell._invalidate_weight_cache()
+        return ret
+
 
 @register_keras_serializable(package='hgq')
 class QSimpleRNN(QRNN, SimpleRNN):
     """Quantized Fully-connected RNN where the output is to be fed back as the new input.
 
-    When the jax backend is used, if any `WRAP` quantizers are used, unroll will
-    be set to `True` to avoid the side effect issue in the `jax.lax.scan` loop.
+    When the jax backend is used, if any trainable `WRAP` quantizers are used,
+    unroll will be set to `True` to avoid the side effect issue in the
+    `jax.lax.scan` loop. Fixed non-trainable `WRAP` quantizers can use rolled
+    execution.
 
     Parameters
     ----------
@@ -418,9 +455,9 @@ class QSimpleRNN(QRNN, SimpleRNN):
         If True, the last state for each sample at index i in a batch will be used as initial
         state for the sample of index i in the following batch. Default: False.
     unroll : bool or None, optional
-        None is equivalent to False. However, for the JAX backend, if
-        any `WRAP` quantizers are used, unroll will be set to True
-        to avoid the side effect issue in the `jax.lax.scan` loop.
+        None is equivalent to False. However, for the JAX backend, if any
+        trainable `WRAP` quantizers are used, unroll will be set to True to
+        avoid the side effect issue in the `jax.lax.scan` loop.
         If True, the network will be unrolled,
         else a symbolic loop will be used.
         Unrolling can speed-up a RNN,

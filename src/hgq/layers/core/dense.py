@@ -85,6 +85,7 @@ class QDense(QLayerBaseSingleInput, Dense):
             {
                 'kq_conf': self.kq.config,
                 'bq_conf': self.bq.config if self.bq is not None else None,
+                'parallelization_factor': self.parallelization_factor,
             }
         )
         return config

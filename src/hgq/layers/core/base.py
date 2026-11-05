@@ -92,14 +92,14 @@ class QLayerMeta(ABCMeta):
                     else:
                         training = kwargs.pop('training', None)
                     r = original_call(self, *args, **kwargs)
-                    if training or training == 'tracing' and self.enable_ebops:  # noqa: E712, training may be a special wrapper object
+                    if (training or training == 'tracing') and self.enable_ebops:  # noqa: E712, training may be a special wrapper object
                         if isinstance(args[0], (tuple, list)):
                             tensors = args[0]
                         else:
                             tensors = args
                         shapes = ((1,) + shape[1:] for shape in map(ops.shape, tensors))
                         if self.enable_ebops:
-                            ebops = self._compute_ebops(*shapes)
+                            ebops = self._compute_ebops(*shapes) * self.ebops_factor
                             self._ebops.assign(ops.cast(ebops, self._ebops.dtype))
                             self.add_loss(ebops * self.beta)
                     if not self.enable_oq or self.__output_quantizer_handled__:
@@ -136,6 +136,7 @@ class QLayerBase(Layer, metaclass=QLayerMeta):
         enable_oq: bool | None = None,
         enable_iq: bool | None = None,
         oq_conf: QuantizerConfig | None = None,
+        ebops_factor: float = 1.0,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -148,6 +149,7 @@ class QLayerBase(Layer, metaclass=QLayerMeta):
             enable_ebops = global_config['enable_ebops'] and self.enable_iq
         self._enable_ebops = enable_ebops
         self._beta0 = beta0
+        self.ebops_factor = ebops_factor
 
         if self.enable_oq:
             oq_conf = oq_conf or QuantizerConfig('default', 'datalane')
@@ -219,6 +221,7 @@ class QLayerBase(Layer, metaclass=QLayerMeta):
         config.update(
             {
                 'enable_ebops': self.enable_ebops,
+                'ebops_factor': self.ebops_factor,
                 'beta0': self._beta0,
                 'enable_oq': self.enable_oq,
                 'enable_iq': self.enable_iq,
@@ -310,7 +313,6 @@ class QLayerBaseMultiInputs(QLayerBase):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self._iqs_confs = None
         if self.enable_iq:
             self._iq_confs = iq_confs if iq_confs is not None else QuantizerConfig('default', 'datalane')
 
@@ -324,10 +326,13 @@ class QLayerBaseMultiInputs(QLayerBase):
 
     @property
     def iq_confs(self):
+        assert self.enable_iq, f'iq_confs has been disabled for {self.name}.'
         return self._iq_confs
 
     def build(self, input_shape):
         super().build(input_shape)
+        if not self.enable_iq:
+            return
         n_input = len(input_shape)
         for _input_shape in input_shape:
             assert isinstance(_input_shape, Iterable), f'each element of input_shape must be iterable, got {_input_shape}'

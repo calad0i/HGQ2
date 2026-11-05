@@ -58,10 +58,7 @@ class QUnaryFunctionLUT(Activation, QLayerBaseSingleInput):
     def call(self, inputs, training=None):
         if self.enable_iq:
             inputs = self.iq(inputs, training=training)
-        x = super().call(inputs)
-        if self.enable_oq:
-            x = self.oq(x, training=training)
-        return x
+        return self.activation(inputs)
 
     def _compute_ebops(self, shape):
         bw_inp = self.iq.bits_(shape)
@@ -76,29 +73,37 @@ class QUnaryFunctionLUT(Activation, QLayerBaseSingleInput):
         return config
 
 
-# class QPositiveUnaryFunctionLUT(QUnaryFunctionLUT):
-#     def __init__(
-#         self,
-#         activation: Callable | str,
-#         iq_conf: QuantizerConfig | None = None,
-#         oq_conf: QuantizerConfig | None = None,
-#         allow_heterogeneous_table: bool = False,
-#         **kwargs,
-#     ):
-#         assert kwargs.pop(
-#             'enable_out_quantizer', True
-#         ), 'enable_out_quantizer must be True for QPositiveUnaryFunctionLUT, if set.'
-#         super().__init__(
-#             activation=activation,
-#             iq_conf=iq_conf,
-#             oq_conf=oq_conf,
-#             enable_oq=True,
-#             allow_heterogeneous_table=allow_heterogeneous_table,
-#             override_oq_k0_to_0=True,
-#             **kwargs,
-#         )
+class QAffinedUnaryFunctionLUT(QUnaryFunctionLUT):
+    def __init__(
+        self,
+        activation: Callable | str,
+        iq_conf: QuantizerConfig | None = None,
+        oq_conf: QuantizerConfig | None = None,
+        enable_oq=True,
+        enable_iq=True,
+        allow_heterogeneous_input: bool = True,
+        allow_heterogeneous_table: bool = True,
+        **kwargs,
+    ):
+        super().__init__(
+            activation=activation,
+            iq_conf=iq_conf,
+            oq_conf=oq_conf,
+            enable_oq=enable_oq,
+            enable_iq=enable_iq,
+            allow_heterogeneous_input=allow_heterogeneous_input,
+            allow_heterogeneous_table=allow_heterogeneous_table,
+            **kwargs,
+        )
+        self.built = False
 
-#     def call(self, inputs, training=None):
-#         x = super().call(inputs, training=training)
-#         eps = self.oq.epsilon_(ops.shape(inputs))
-#         return ops.maximum(x, eps)
+    def build(self, input_shape):
+        self.scale = self.add_weight(name='scale', shape=(1,), initializer='ones', trainable=True)
+        self.bias = self.add_weight(name='bias', shape=(1,), initializer='zeros', trainable=True)
+        super().build(input_shape)
+
+    def call(self, inputs, training=None):
+        if self.enable_iq:
+            inputs = self.iq(inputs, training=training)
+        inputs = inputs * self.scale + self.bias
+        return self.activation(inputs)
