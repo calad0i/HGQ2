@@ -244,3 +244,27 @@ class QConv3D(QBaseConv):
     ):
         kwargs = gather_vars_to_kwargs('self')
         super().__init__(rank=3, **kwargs)
+
+
+def _pointwise_kernel_size(kwargs, rank):
+    kernel_size = kwargs.pop('kernel_size', 1)
+    kernel_size = (kernel_size,) * rank if isinstance(kernel_size, int) else tuple(kernel_size)
+    if kernel_size != (1,) * rank:
+        raise ValueError(f'A pointwise convolution has a kernel size of 1, got {kernel_size}')
+    return 1
+
+
+class QPointwiseConv1D(QConv1D):
+    """QConv1D with a kernel size of 1: mixes channels at every position."""
+
+    def __init__(self, filters, strides=1, padding='valid', **kwargs):
+        kernel_size = _pointwise_kernel_size(kwargs, 1)
+        super().__init__(filters, kernel_size, strides=strides, padding=padding, **kwargs)
+
+
+class QPointwiseConv2D(QConv2D):
+    """QConv2D with a 1x1 kernel: mixes channels at every pixel."""
+
+    def __init__(self, filters, strides=(1, 1), padding='valid', **kwargs):
+        kernel_size = _pointwise_kernel_size(kwargs, 2)
+        super().__init__(filters, kernel_size, strides=strides, padding=padding, **kwargs)

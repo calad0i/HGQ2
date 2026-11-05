@@ -47,6 +47,7 @@ These features are functional but may undergo changes or improvements:
 - 🟠 **QMultiHeadAttention**: Only `io_parallel` supported in `hls4ml`. Implementation is likely not optimal, but can generate synthesizable firmware.
 - 🟠 **QSum, QMeanPow2**: No `hls4ml` support at the moment.
 - 🟠 **QConv3D**: No `hls4ml` support.
+- 🟠 **QDepthwiseConv1D/2D, QSeparableConv1D/2D, QPointwiseConv1D/2D**: New. `hls4ml` converts QSeparableConv into depthwise + quantizer (`pq`, the depthwise result) + 1x1 conv. No `da4ml` (alkaid) tracing yet.
 
 ```{warning}
 `QConv*D` layer has greater numerical instability on the `torch` backend compared to `jax` and `tf`. Expect to slight difference between the keras model and the `hls4ml` model. Though, the difference should not affect the performance of the model significantly.
