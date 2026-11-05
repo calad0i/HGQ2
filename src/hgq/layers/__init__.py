@@ -2,7 +2,7 @@ from ..quantizer import Quantizer
 from .activation import QAffinedUnaryFunctionLUT, QUnaryFunctionLUT
 from .attn import QLinformerAttention, QLinformerAttentionT, QMultiHeadAttention, QMultiHeadAttentionT
 from .batch_normalization import QBatchNormalization
-from .conv import QConv1D, QConv2D, QConv3D
+from .conv import QConv1D, QConv2D, QConv3D, QDepthwiseConv1D, QDepthwiseConv2D, QSeparableConv1D, QSeparableConv2D
 from .core import *
 from .einsum_dense_batchnorm import QEinsumDenseBatchnorm
 from .ops import *
@@ -55,6 +55,10 @@ __all__ = [
     'QConv1D',
     'QConv2D',
     'QConv3D',
+    'QDepthwiseConv1D',
+    'QDepthwiseConv2D',
+    'QSeparableConv1D',
+    'QSeparableConv2D',
     'QEinsumDenseBatchnorm',
     'QSoftmax',
     'Quantizer',

@@ -17,8 +17,12 @@ from hgq.layers import (
     QConv2D,
     QConv3D,
     QDense,
+    QDepthwiseConv1D,
+    QDepthwiseConv2D,
     QEinsumDense,
     QEinsumDenseBatchnorm,
+    QSeparableConv1D,
+    QSeparableConv2D,
     Quantizer,
 )
 from hgq.quantizer.internal import FixedPointQuantizerBase
@@ -42,7 +46,19 @@ class _QDense(QLayerMixin, ReplayDense):
 
 
 class _QConv(QLayerMixin, ReplayConv):
-    handles = (QConv1D, QConv2D, QConv3D)
+    handles = (QConv1D, QConv2D, QConv3D, QDepthwiseConv1D, QDepthwiseConv2D)
+
+
+class _QSeparableConv(QLayerMixin, ReplayOperationBase):
+    """Replays the two QConv sublayers in series; the input quantizer is the depthwise sublayer's."""
+
+    handles = (QSeparableConv1D, QSeparableConv2D)
+    __input_quantizer_handled__ = True
+
+    def call(self, inputs: FVArray) -> FVArray:
+        op: QSeparableConv1D | QSeparableConv2D = self.op  # type: ignore
+        x = _QConv(op.depthwise)(inputs)['final'][0]
+        return _QConv(op.pointwise)(x)['final'][0]
 
 
 class _QBatchNormalization(QLayerMixin, ReplayBatchNormalization):

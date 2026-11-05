@@ -24,6 +24,7 @@ Only `Vitis` and `Vivado` (deprecated) backends are fully supported for `hls4ml`
 - ✅ **Core layers**: QDense
 - ✅ **Non-linear Activation layers**: QUnaryFunctionLUT
 - ✅ **Convolutional layers**: QConv1D, QConv2D, QConv3D (non-dilated only)
+- ✅ **QDepthwiseConv1D/2D, QSeparableConv1D/2D**: Aliases of QConv. Depthwise is a grouped QConv (groups = in_channels, filters = in_channels * depth_multiplier); separable is a QDepthwiseConv followed by a 1x1 QConv.
 - ✅ **Normalization**: QBatchNormalization
 - ✅ **Basic operation layers**: QAdd, QMultiply, QSubtract, QMaximum, QMinimum
 
