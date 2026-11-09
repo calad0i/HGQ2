@@ -20,10 +20,8 @@ HGQ2 implements an gradient-based automatic bitwidth optimization and quantizati
 
 In addition, this framework improves upon the old HGQ implementation in the following aspects:
 
-- **Scalability**: HGQ2 supports `TensorFlow`, `JAX`, and `PyTorch`. As XLA compilation in`JAX` and `TensorFlow` can significantly speed up the training process. Training speed on HGQ2 can be 1.2-5 times faster than the previous implementation.
-- **Quantizers**:
-  - _Fixed-point_: While the last implementation only optimizes the number of floating bits with one way of parameterizing the fixed-point numbers, HGQ2 supports multiple ways of parametrizing them, and allows of optimizing any part of them via gradients.
-  - _Minifloat_: Training with minifloat quantization is supported, also with surrogate gradients support (alpha quality).
+- **Scalability**: HGQ2 supports `TensorFlow`, `JAX`, and `PyTorch`. XLA compilation in `JAX` and `TensorFlow`, and `torch.compile` in `PyTorch`, can significantly speed up the training process. Opt-in Triton kernels for the dense and attention layers are available on `JAX` and `PyTorch` with CUDA GPUs ([details](https://calad0i.github.io/HGQ2/triton.html)).
+- **Fixed Point Quantizers**: While the last implementation only optimizes the number of floating bits with one way of parameterizing the fixed-point numbers, HGQ2 supports multiple ways of parametrizing them, and allows of optimizing any part of them via gradients.
 - **More Layers**: More layers are supported now, including the powerful `EinsumDense(BatchNorm)` layer and the `MultiHeadAttention` layer with bit-accurate softmax and scaled dot-product attention.
 
 

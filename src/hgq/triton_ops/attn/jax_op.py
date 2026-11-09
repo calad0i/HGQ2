@@ -19,8 +19,8 @@ and the softmax's static settings (attn.spec.AttentionSettings), and returns
   keys, and 2-pass of the inverse table's |input quantizer output|. Each int32, the float32 bit patterns, from buffers
   zeroed before the kernel atomically maxes into them (zero Refs); then negative (5, H, DV) int32, 1 where any output
   of the context quantizer (per lane), and at lane 0 of the weight, score, probability and inverse-table input
-  quantizers, was negative over the calls (the tracing call's k update). An inference call's settings (training
-  False): each (1,), zero.
+  quantizers, was negative over the calls (the tracing call's k update; (1,), zero, outside tracing). An inference
+  call's settings (training False): each (1,), zero.
 
 attention_backward runs the backward kernel on the same operands and the cotangents go, gl of o, l, and returns its
 per-program partials; attention_cotangents reduces them to the operands' shapes. `attention` is the custom_vjp of the
@@ -33,7 +33,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from .spec import WARPS, AttentionSettings, kernel_dims, maxima_shapes, query_block
+from .spec import AttentionSettings, kernel_dims, maxima_shapes, maxnreg, query_block, warps
 
 
 def attention_forward(query, key, value, valid, first, n, qp, akif, settings: AttentionSettings, block: int | None = None):
@@ -58,6 +58,7 @@ def attention_forward(query, key, value, valid, first, n, qp, akif, settings: At
     scaler = jnp.full((1,), settings.scaler, f32)
     maxima = [jax.new_ref(jnp.zeros(s, jnp.int32)) for s in maxima_shapes(query.shape, key.shape, value.shape, settings)]
     outs = (jax.ShapeDtypeStruct((batch, queries, heads, lanes), f32), jax.ShapeDtypeStruct((batch, queries, heads), f32))
+    dims = kernel_dims(query.shape, key.shape, value.shape, n.shape, qp.shape, block)
     o, l = jax_triton.triton_call(
         query,
         key,
@@ -72,9 +73,10 @@ def attention_forward(query, key, value, valid, first, n, qp, akif, settings: At
         kernel=K.attn_fwd,
         out_type=outs,
         grid=(batch, heads, nb),
-        num_warps=WARPS,
+        num_warps=warps(dims, False),
         num_stages=1,
-        **kernel_dims(query.shape, key.shape, value.shape, n.shape, qp.shape, block),
+        backend_options=dict(maxnreg=maxnreg(dims, False, settings.two_pass)),
+        **dims,
         **settings.consts(),
     )
     return o, l, *(jax.freeze(m) for m in maxima)
@@ -117,6 +119,7 @@ def attention_backward(
         *[(rounds, batch, heads, queries)] * 3,  # per-program scratch: later (then ds), dm, max
     )
     outs = tuple(jax.ShapeDtypeStruct(s, f32) for s in out_shapes)
+    dims = kernel_dims(query.shape, key.shape, value.shape, n.shape, qp.shape, block)
     return jax_triton.triton_call(
         query,
         key,
@@ -132,9 +135,10 @@ def attention_backward(
         kernel=K.attn_bwd,
         out_type=outs,
         grid=(batch, heads, nb),
-        num_warps=WARPS,
+        num_warps=warps(dims, True),
         num_stages=1,
-        **kernel_dims(query.shape, key.shape, value.shape, n.shape, qp.shape, block),
+        backend_options=dict(maxnreg=maxnreg(dims, True, settings.two_pass)),
+        **dims,
         **settings.consts(),
     )[:5]
 

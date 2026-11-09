@@ -8,6 +8,7 @@
 
 import os
 import sys
+from typing import Literal
 
 import hgq
 
@@ -66,3 +67,14 @@ html_context = {
 html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
 html_favicon = '_static/icon.svg'
+
+
+def _skip_triton_ops_internals(app, what, name, obj, skip, options) -> None | Literal[True]:
+    # hgq.triton_ops: only enable and enabled are public
+    if getattr(obj, '__module__', None) == 'hgq.triton_ops' and name not in ('enable', 'enabled'):
+        return True
+    return None
+
+
+def setup(app):
+    app.connect('autodoc-skip-member', _skip_triton_ops_internals)

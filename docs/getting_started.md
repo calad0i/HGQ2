@@ -163,3 +163,19 @@ with QuantizerConfigScope(place='datalane', heterogeneous_axis=None, homogeneous
 Only one of `heterogeneous_axis` and `homogeneous_axis` are mutually exclusive, and setting both will raise an error. The tuples passed to these parameters specify the axes along which quantization is (not) applied heterogeneously. For a complete example, please refer to the [example notebooks](https://github.com/calad0i/HGQ2/blob/master/example) located in the repository.
 
 For more advanced configuration options, the user may override `bw_mapper` object in the quantizer config/scope. The `bw_mapper` object is of type `hgq.quantizer.internal.base.BitwidthMapperBase`, which is responsible for mapping between the quantization bitwidths and the data. Please refer to the `hgq.quantizer.internal.base.DefaultBitwidthMapper` class for the default implementation.
+
+### Triton Routes and torch.compile
+
+On the `jax` and `torch` backends with a CUDA GPU, `QDense`, `QEinsumDense` and `QMultiHeadAttention` can use custom triton kernels based implemtation. On the `torch` backend, `jit_compile` also accepts a `torch.compile` mode or backend name:
+
+```python
+import hgq.triton_ops
+
+hgq.triton_ops.enable()  # before the first fit/evaluate/predict call
+
+# torch>=2.12: compile the steps with torch.compile
+# jit_compile=True is NOT patched, which will result in OOM slower training, not recommended in all cases.
+model.compile(optimizer='adam', loss='mse', jit_compile='default')
+```
+
+See [Triton Routes and torch.compile](triton.md) for the covered configurations and the fallback behavior.

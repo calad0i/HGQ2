@@ -1,16 +1,30 @@
-"""Triton kernels for hgq2: the QDense / QEinsumDense training route and the QMultiHeadAttention one."""
+"""Triton kernels for hgq2: the QDense / QEinsumDense training route and the QMultiHeadAttention one, on the GPUs Triton
+targets (NVIDIA CUDA, AMD ROCm, Intel XPU; on JAX, through jax-triton, CUDA and ROCm). Tested on NVIDIA CUDA only."""
 
 import functools
 import os
 from importlib import import_module
+from typing import Literal
 
 import keras
 
 _on = {'qdense': False, 'attention': False}
+_precision = {'precision': 'tf32', 'force_fp32_inference': True}
 
 
-def enable(qdense: bool = True, attention: bool = True):
-    """Switch the Triton training routes on or off. Switching one on imports it and raises if cannot run on selected backend."""
+def enable(
+    qdense: bool = True,
+    attention: bool = True,
+    precision: Literal['fp32', 'tf32'] = 'tf32',
+    force_fp32_inference: bool = True,
+):
+    """Switch the Triton training routes on or off. Switching one on imports it and raises if cannot run on selected backend.
+
+    ``precision``: the multiplies of the QDense route's Triton dots in training calls, 'tf32' or 'fp32' (accumulation is
+    fp32 either way). Inference and tracing calls use fp32 when ``force_fp32_inference``, else ``precision``. The
+    attention kernels have no dots. Read when a call runs or is traced, like the switches."""
+    if precision not in ('fp32', 'tf32'):
+        raise ValueError(f"precision {precision!r}, not 'fp32' or 'tf32'")
     backend = keras.backend.backend()
     for kind, on, package in (('qdense', qdense, 'qdense'), ('attention', attention, 'attn')):
         if on:
@@ -26,6 +40,7 @@ def enable(qdense: bool = True, attention: bool = True):
             else:
                 _patch_jax_triton()
         _on[kind] = bool(on)
+    _precision.update(precision=precision, force_fp32_inference=bool(force_fp32_inference))
 
 
 @functools.cache
@@ -106,11 +121,17 @@ def enabled(kind: str) -> bool:
     return _on[kind]
 
 
-def on_cuda(x) -> bool:
-    """Whether a call on ``x`` runs on a CUDA GPU. torch: the tensor's device. JAX: a concrete array's devices; inside a
-    trace, the device JAX places uncommitted computation on (jax_default_device, else the default backend's first)."""
+def dot_precision(training) -> str:
+    """tl.dot's input_precision for a call: 'tf32' or 'ieee' (fp32), from `enable`'s ``precision`` settings."""
+    if _precision['force_fp32_inference'] and training is not True:  # inference and tracing
+        return 'ieee'
+    return 'ieee' if _precision['precision'] == 'fp32' else 'tf32'
+
+
+def on_gpu(x) -> bool:
+    """Whether a call on ``x`` runs on a GPU the routes target."""
     if keras.backend.backend() == 'torch':
-        return bool(getattr(x, 'is_cuda', False))
+        return bool(getattr(x, 'is_cuda', False) or getattr(x, 'is_xpu', False))
     import jax
 
     default = jax.config.jax_default_device
@@ -120,7 +141,7 @@ def on_cuda(x) -> bool:
         devices = jax.devices(default)[:1]
     else:
         devices = [default if default is not None else jax.devices()[0]]
-    return all(d.platform == 'gpu' and 'cuda' in d.client.platform_version.lower() for d in devices)
+    return all(d.platform == 'gpu' for d in devices)
 
 
 enable(qdense=os.environ.get('HGQ_TRITON_QDENSE') == '1', attention=os.environ.get('HGQ_TRITON_ATTENTION') == '1')

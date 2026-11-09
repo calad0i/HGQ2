@@ -13,40 +13,30 @@ Only `Vitis` and `Vivado` (deprecated) backends are fully supported for `hls4ml`
 ### Core Functionality
 - ✅ **Quantization-aware training** with fixed-point quantization
 - ✅ **Multi-backend support** (TensorFlow, JAX, PyTorch)
-- ✅ **XLA compilation** for accelerated training, Jax and TensorFlow only (PyTorch dynamo is under investigation)
-- ✅ **hls4ml integration** for FPGA deployment
+- ✅ **XLA compilation** for accelerated training, JAX and TensorFlow only (for PyTorch, see `torch.compile` below)
+- ✅ **alkaid/hls4ml integration** for FPGA deployment
 
 ### Quantization Types
 - ✅ **kif** (Keep-Integer-Fraction) fixed-point quantization
 - ✅ **kbi** (Keep-Bit-Integer) fixed-point quantization
 
 ### Layers
-- ✅ **Core layers**: QDense
+- ✅ **Core layers**: Q(Einsum)Dense, QConv1D, QConv2D, QConv3D
 - ✅ **Non-linear Activation layers**: QUnaryFunctionLUT
-- ✅ **Convolutional layers**: QConv1D, QConv2D, QConv3D (non-dilated only)
 - ✅ **Normalization**: QBatchNormalization
 - ✅ **Basic operation layers**: QAdd, QMultiply, QSubtract, QMaximum, QMinimum
+- ✅ **Attention**: QMultiHeadAttention. Enable flash attention with `softmax='1pass'` or `'2pass'`.
+- ✅ **Lookup Table Based Layers**: Q(Einsum)DenseT, QConv*DT, QMultiHeadAttentionT.
 
-### Utilities
-- ✅ **trace_minmax**: Calibration for bit-exact inference
-- ✅ **EBOP tracking**: Resource estimation during training
-- ✅ **BetaScheduler**: Dynamic adjustment of regularization strength
-
-## Alpha/Beta Features
+### Beta Features
 
 These features are functional but may undergo changes or improvements:
 
-### Beta Features
-- 🟡 **QEinsumDense, Qinsum**: Only `io_parallel` supported in hls4ml. Mostly stable but implementation at `hls4ml` is not fully optimal. `parallelization_factor` is not implemented.
-- 🟡 **QEinsumDenseBatchnorm, QBatchNormDense**: Fused batchnorm layers. We observe some instability for them during training. Once trained, conversion to firmware is regarded as stable.
-- 🟡 **QSoftmax**: Bit-exact quantized softmax implementation for `hls4ml` convertion. May be unstable during training. Once trained, conversion to firmware is regarded as stable.
-- 🟡 **QDot**: The `hls4ml` implementation supports only `i,i->` pattern dot product, and only works in `io_parallel`. Use `QEinsum` instead if more general dot product is needed.
+- 🟡 **torch.compile**: Bunch of patches applied against torch and keras, upstreaming planned but will take time. See [Triton Routes and torch.compile](triton.md).
+- 🟡 **Triton routes**: Opt-in Triton kernels for `QDense`, `QEinsumDense`, and `QMultiHeadAttention` with `softmax='1pass'` or `'2pass'` (FA impl), on the `jax` and `torch` backends with GPUs. Unsupported configurations fall back to XLA ops. See [Triton Routes and torch.compile](triton.md).
 
 ### Alpha Features
-- 🟠 **Minifloat quantization**: Training support is available, but hardware synthesis is not yet supported. Not widely tested.
-- 🟠 **QMultiHeadAttention**: Only `io_parallel` supported in `hls4ml`. Implementation is likely not optimal, but can generate synthesizable firmware.
-- 🟠 **QSum, QMeanPow2**: No `hls4ml` support at the moment.
-- 🟠 **QConv3D**: No `hls4ml` support.
+- 🟠 **Minifloat quantization**: Training support is technically, did not find any real use case so far and stucking in limbo.
 
 ```{warning}
 `QConv*D` layer has greater numerical instability on the `torch` backend compared to `jax` and `tf`. Expect to slight difference between the keras model and the `hls4ml` model. Though, the difference should not affect the performance of the model significantly.
@@ -55,7 +45,10 @@ These features are functional but may undergo changes or improvements:
 ## Version Compatibility
 
 - HGQ2 requires Keras v3
-- For hls4ml integration, the fork at https://github.com/calad0i/hls4ml/tree/da4ml-v2 is required
+- Alkaid is recommended for hardware implementation. `alkaid>=1.0` is required (the tracing mechanism is not compatible with `alkaid<1.0`).
+- hls4ml from the latest master supports **most** operations in `io_parallel`.
+- `torch.compile` support requires `torch>=2.12`. Triton routes on `jax` require `jax-triton>=0.4`
+- The Triton routes and `torch.compile` support are tested with `torch` 2.15 and `triton` 3.9, and with `jax` 0.12 and `jax-triton` 0.4.1, all on a Linux host. Non-linux host may work or may not work.
 
 ## Reporting Issues
 

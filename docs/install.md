@@ -33,6 +33,18 @@ pip install da4ml>=0.6
 pip install hls4ml>=1.2.0
 ```
 
+### Optional Dependencies
+
+- `torch.compile` support (`jit_compile` set to a `torch.compile` mode or backend name, see [Triton Routes and torch.compile](triton.md)) requires `torch>=2.12`:
+  ```bash
+  pip install "HGQ2[torch]"
+  ```
+- The [Triton routes](triton.md) require `triton` and a CUDA-enabled `jax` or `torch` installation. On `jax`,  `jax-triton>=0.4` is also needed.
+  ```bash
+  pip install "HGQ2[triton]"      # torch backend
+  pip install "HGQ2[jax-triton]"  # jax backend
+  ```
+
 ## Troubleshooting
 
 ### Common Issues

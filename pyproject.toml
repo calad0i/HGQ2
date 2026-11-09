@@ -25,6 +25,7 @@ classifiers = [
 dynamic = [ "version" ]
 dependencies = [ "keras>=3.15", "quantizers>=2", "tqdm" ]
 optional-dependencies.docs = [ "myst-parser", "pyparsing", "sphinx", "sphinx-rtd-theme" ]
+optional-dependencies.jax-triton = [ "jax-triton>=0.4", "triton>=3.7" ]
 optional-dependencies.test = [
   "da4ml>=0.6",
   "hls4ml>=1.2",
@@ -39,6 +40,7 @@ optional-dependencies.test = [
   "pytest-xdist>=3.3",
 ]
 optional-dependencies.torch = [ "torch>=2.12" ]
+optional-dependencies.triton = [ "triton>=3.7" ]
 urls.repository = "https://github.com/calad0i/HGQ2"
 entry-points."dais_tracer.plugins".keras = "hgq._dais_tracer.main:HGQ2DAISTracer"
 entry-points.alkaid_keras.hgq = "hgq._alkaid_keras_plugin:register"

@@ -18,5 +18,5 @@ help:
 # "make mode" option.  $(O) is meant as a shortcut for $(SPHINXOPTS).
 %: Makefile
 	@sphinx-apidoc -f -o autodoc/ ../src/qkeras
-	@sphinx-apidoc -f -o autodoc/ ../src/hgq
+	@sphinx-apidoc -f -o autodoc/ ../src/hgq '../src/hgq/triton_ops/[!_]*'
 	@$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)

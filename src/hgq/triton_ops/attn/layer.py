@@ -10,14 +10,15 @@ replay kernel, replay.jax_op / replay.torch_op, one launch per quantizer) and, 1
 table in keras ops (2-pass: in the kernel). A tracing call (training 'tracing') runs the training kernels, its replay
 with decay 0 from the rounded integer bits (FixedPointQuantizerKIF.call's tracing transition), and ORs into each
 rounding quantizer's k whether the kernel saw any of its outputs negative. An inference call (training False or None)
-launches the forward kernel only, every quantizer in its quantize form.
+launches the forward kernel only, every quantizer in its quantize form. The kernels have no tl.dot (elementwise FP32), so
+`hgq.triton_ops.enable`'s ``precision`` does not apply to them.
 
 Fallback: with the switch on, a call that cannot take the route runs the keras-ops scan, with a warning per
 distinct reason, once, when the gate runs (traced): a configuration the kernels do not reproduce (`applies`), the
-computation not placed on a CUDA GPU, a replayed quantizer with a bit-width mapper other than DefaultBitwidthMapper or an
+computation not placed on a supported GPU, a replayed quantizer with a bit-width mapper other than DefaultBitwidthMapper or an
 integer-bit constraint other than None or MinMax. Errors raised while building or running the kernels propagate.
 
-Placement: torch, the tensor's device (``is_cuda``). JAX, a concrete operand's devices; inside a trace (jax.jit, the
+Placement (`hgq.triton_ops.on_gpu`): torch, the tensor's device. JAX, a concrete operand's devices; inside a trace (jax.jit, the
 jax.checkpoint around the attention) operands carry no device, so the device JAX places uncommitted computation on
 (jax_default_device, else the default backend's first device). A jitted call on inputs committed elsewhere fails to
 lower the Triton call rather than running wrongly.
@@ -28,6 +29,7 @@ from math import prod
 
 import keras
 from keras import ops
+from keras.src.backend import in_symbolic_scope
 
 from ... import triton_ops
 from ...constraints import MinMax
@@ -99,8 +101,9 @@ def applies(layer, query, key, value, training) -> bool:
     context); the exp table without EBOPs. 2-pass also: the inverse table without EBOPs, its output quantizer stateless
     (training), its input and the probability quantizer either kind, at most per head. In training, the replayed
     (rounding) quantizers with the default bit-width mapper (the replay kernel reduces as it does) and no or a MinMax
-    integer-bit constraint. Then placement on a CUDA GPU."""
-    if not triton_ops.enabled('attention') or layer._softmax_kind == 'comb' or layer._fuse != 'none':
+    integer-bit constraint. Then placement on a supported GPU (`hgq.triton_ops.on_gpu`). Keras' symbolic build (placeholder
+    inputs, no device) runs the keras-ops attention unwarned."""
+    if not triton_ops.enabled('attention') or layer._softmax_kind == 'comb' or layer._fuse != 'none' or in_symbolic_scope():
         return False
     training = training is True or training == 'tracing'
     softmax, table = layer._softmax, layer._softmax.exp_table
@@ -144,16 +147,16 @@ def applies(layer, query, key, value, training) -> bool:
             return _gate(f'{name} bit-width mapper {type(mapper).__name__} (the replay reduces as DefaultBitwidthMapper)')
         if constraint is not None and type(constraint) is not MinMax:
             return _gate(f'{name} integer-bit constraint {type(constraint).__name__} (the replay takes None or MinMax)')
-    if not triton_ops.on_cuda(query):
-        return _gate('not placed on a CUDA GPU')
+    if not triton_ops.on_gpu(query):
+        return _gate('not placed on a supported GPU')
     return True
 
 
-def _replay(quantizer, maxima, negative, tracing: bool, repeats=1):
+def _replay(quantizer, maxima, negative, plane: int, tracing: bool, repeats=1):
     """Assign a rounding quantizer the state its training or ``tracing`` calls leave (FixedPointQuantizerKIF.call's
     transition per call), from the kernel's per-call abs-maxima ``(calls, heads[, lanes])``, each call ``repeats`` times
-    in a row; tracing, the integer bits with decay 0 and k ORed with ``negative`` (heads, lanes), whether any of the
-    calls' outputs was negative."""
+    in a row; tracing, the integer bits with decay 0 and k ORed with ``negative[plane]`` (heads, lanes), whether any of
+    the calls' outputs was negative."""
     if keras.backend.backend() == 'jax':
         from ..replay.jax_op import replay_integer_bits
     else:
@@ -165,7 +168,7 @@ def _replay(quantizer, maxima, negative, tracing: bool, repeats=1):
     bounds = None if c is None else (c.min_value, c.max_value)
     q._i.assign(replay_integer_bits(i, maxima, f, decay, bounds=bounds, repeats=repeats, tracing=tracing))
     if tracing:
-        flag = ops.reshape(negative, (1, negative.shape[0], 1, negative.shape[1]))
+        flag = ops.reshape(negative[plane], (1, negative.shape[1], 1, negative.shape[2]))
         axes = tuple(a for a in (1, 3) if q._k.shape[a] == 1)
         if axes:
             flag = ops.amax(flag, axis=axes, keepdims=True)
@@ -184,7 +187,7 @@ def _attention(softmax, query, key, value, attention_mask, training):
     batch, queries, heads, _ = query.shape
     rounds, lanes = key.shape[1], value.shape[-1]
     stateful, tracing = training is True or training == 'tracing', training == 'tracing'
-    settings, block = attention_settings(softmax, stateful), query_block(queries, None)
+    settings, block = attention_settings(softmax, stateful, tracing), query_block(queries, None)
     nb = queries // block
     keep = ops.ones((batch, 1, rounds), 'bool') if attention_mask is None else ops.cast(attention_mask, 'bool')
     valid = ops.cast(ops.broadcast_to(ops.moveaxis(keep, -1, 0), (rounds, batch, queries)), 'float32')
@@ -213,14 +216,14 @@ def _attention(softmax, query, key, value, attention_mask, training):
             context, weight = checkpoint_name((context, weight), _SAVED)
         # Calls in call order: context two per round, weight one per round, the score once; 2-pass, probability one per
         # round and inverse-table input once per round (the same maxima every round).
-        _replay(softmax.aq, maxima, negative[0], tracing)
-        _replay(softmax.lq, held, negative[1], tracing)
+        _replay(softmax.aq, maxima, negative, 0, tracing)
+        _replay(softmax.lq, held, negative, 1, tracing)
         if settings.q_s == 'round':
-            _replay(softmax.iq, rounded[:1], negative[2], tracing)
+            _replay(softmax.iq, rounded[:1], negative, 2, tracing)
         if settings.two_pass and settings.q_p == 'round':
-            _replay(softmax.oq, served, negative[3], tracing)
+            _replay(softmax.oq, served, negative, 3, tracing)
         if settings.two_pass and settings.q_ii == 'round':
-            _replay(softmax.inv_table.iq, rounded[1:], negative[4], tracing, repeats=rounds)
+            _replay(softmax.inv_table.iq, rounded[1:], negative, 4, tracing, repeats=rounds)
     if not settings.two_pass:
         context = context * softmax.inv_table(weight[..., None], training=training)
     return ops.transpose(context, (0, 2, 1, 3))

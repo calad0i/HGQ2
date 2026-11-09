@@ -20,7 +20,7 @@ import torch
 from torch.library import triton_op, wrap_triton
 
 from . import kernels as K
-from .spec import WARPS, AttentionSettings, kernel_dims, maxima_shapes, query_block
+from .spec import AttentionSettings, kernel_dims, maxima_shapes, maxnreg, query_block, warps
 
 F32 = torch.float32
 Tensor = torch.Tensor
@@ -40,7 +40,9 @@ def _geometry(query, key, value, n, block):
 def _launch(kernel, grid, args, dims, settings):
     """``args``: the contiguous operands, then the outputs; ``dims``: attn.spec.kernel_dims, compile-time constants."""
     modes = {k: v.lower() if isinstance(v, str) else v for k, v in settings.consts().items()}  # qdense.torch_op._modes_lower
-    wrap_triton(kernel)[grid](*args, num_warps=WARPS, num_stages=1, **dims, **modes)
+    bwd = kernel is K.attn_bwd
+    cap = maxnreg(dims, bwd, settings.two_pass)
+    wrap_triton(kernel)[grid](*args, num_warps=warps(dims, bwd), num_stages=1, maxnreg=cap, **dims, **modes)
 
 
 @triton_op('hgqtri::attn_fwd', mutates_args=())
@@ -49,14 +51,15 @@ def attn_fwd(
     rnd_s: str, ovf_s: str, null_s: bool, rnd_ei: str, ovf_ei: str, null_ei: bool, rnd_eo: str, ovf_eo: str,
     null_eo: bool, rnd_a: str, rnd_l: str, scaler: float, q_s: str, two_pass: bool, rnd_ii: str, ovf_ii: str,
     null_ii: bool, q_ii: str, rnd_io: str, ovf_io: str, null_io: bool, q_p: str, rnd_p: str, ovf_p: str, null_p: bool,
-    epsilon: float, q_a: str, ovf_a: str, null_a: bool, q_l: str, ovf_l: str, null_l: bool, training: bool, block: int,
+    epsilon: float, q_a: str, ovf_a: str, null_a: bool, q_l: str, ovf_l: str, null_l: bool, training: bool,
+    tracing: bool, block: int,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:  # fmt: skip
     """The forward kernel: (o, l, context, held, served, rounded, negative) of float32 contiguous operands, the maxima
-    and flags int32 (inference: (1,), zero)."""
+    and flags int32 (inference: (1,), zero; the flags also outside tracing)."""
     settings = AttentionSettings(
         rnd_s, ovf_s, null_s, rnd_ei, ovf_ei, null_ei, rnd_eo, ovf_eo, null_eo, rnd_a, rnd_l, scaler, q_s,
         two_pass, rnd_ii, ovf_ii, null_ii, q_ii, rnd_io, ovf_io, null_io, q_p, rnd_p, ovf_p, null_p, epsilon, q_a, ovf_a,
-        null_a, q_l, ovf_l, null_l, training,
+        null_a, q_l, ovf_l, null_l, training, tracing,
     )  # fmt: skip
     query, key, value, valid, first, n, qp, akif = (x.contiguous() for x in (query, key, value, valid, first, n, qp, akif))
     batch, queries, heads, depth, rounds, lanes, nb = _geometry(query, key, value, n, block)
@@ -79,13 +82,14 @@ def attn_bwd(
     rnd_s: str, ovf_s: str, null_s: bool, rnd_ei: str, ovf_ei: str, null_ei: bool, rnd_eo: str, ovf_eo: str,
     null_eo: bool, rnd_a: str, rnd_l: str, scaler: float, q_s: str, two_pass: bool, rnd_ii: str, ovf_ii: str,
     null_ii: bool, q_ii: str, rnd_io: str, ovf_io: str, null_io: bool, q_p: str, rnd_p: str, ovf_p: str, null_p: bool,
-    epsilon: float, q_a: str, ovf_a: str, null_a: bool, q_l: str, ovf_l: str, null_l: bool, training: bool, block: int,
+    epsilon: float, q_a: str, ovf_a: str, null_a: bool, q_l: str, ovf_l: str, null_l: bool, training: bool,
+    tracing: bool, block: int,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:  # fmt: skip
     """The backward kernel: the per-program partials (d_query, d_key and d_value shares, df shares, dq shares)."""
     settings = AttentionSettings(
         rnd_s, ovf_s, null_s, rnd_ei, ovf_ei, null_ei, rnd_eo, ovf_eo, null_eo, rnd_a, rnd_l, scaler, q_s,
         two_pass, rnd_ii, ovf_ii, null_ii, q_ii, rnd_io, ovf_io, null_io, q_p, rnd_p, ovf_p, null_p, epsilon, q_a, ovf_a,
-        null_a, q_l, ovf_l, null_l, training,
+        null_a, q_l, ovf_l, null_l, training, tracing,
     )  # fmt: skip
     ins = (query, key, value, valid, first, n, qp, akif, go, gl)
     query, key, value, valid, first, n, qp, akif, go, gl = (x.contiguous() for x in ins)
@@ -145,7 +149,7 @@ def _setup(ctx, inputs, output):
 
 def _backward(ctx, go, gl, *_):
     """The maxima's cotangents are ignored (not differentiable); valid, first, n and the settings get none."""
-    if not ctx.statics[-2]:
+    if not ctx.statics[-3]:
         raise RuntimeError('the inference attention kernel (settings.training False) has no backward')
     query, key, value, valid, first, n, qp, akif = ctx.saved_tensors
     o_shape = (*query.shape[:3], value.shape[-1])

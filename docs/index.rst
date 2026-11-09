@@ -44,7 +44,8 @@ Key Features
 
 In addition, this framework improves upon the old HGQ implementation in the following aspects:
 
-- **Scalability**: HGQ2 supports ``TensorFlow``, ``JAX``, and ``PyTorch``. As XLA compilation in ``JAX`` and ``TensorFlow`` can significantly speed up the training process. Training speed on HGQ2 can be 1.2-5 times faster than the previous implementation.
+- **Scalability**: HGQ2 supports ``TensorFlow``, ``JAX``, and ``PyTorch``. XLA compilation in ``JAX`` and ``TensorFlow``, and ``torch.compile`` in ``PyTorch``, can significantly speed up the training process. Opt-in Triton kernels for the dense and attention layers are available on ``JAX`` and ``PyTorch`` with CUDA GPUs (see :doc:`triton`, strongly recommended for transformer models with flash attention implementation).
+
 - **Quantizers**:
   - *Fixed-point*: While the last implementation only optimizes the number of floating bits with one way of parameterizing the fixed-point numbers, HGQ2 supports multiple ways of parametrizing them, and allows of optimizing any part of them via gradients.
   - *Minifloat*: Training with minifloat quantization is supported, also with surrogate gradients support (alpha quality).
@@ -106,6 +107,7 @@ Index
    status.md
    install.md
    getting_started.md
+   triton.md
    qkeras.md
    faq.md
 
@@ -119,6 +121,7 @@ Index
    autodoc/hgq.layers
    autodoc/hgq.quantizer
    autodoc/hgq.regularizers
+   autodoc/hgq.triton_ops
    autodoc/hgq.utils
    autodoc/qkeras
 

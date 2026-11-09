@@ -5,9 +5,11 @@ import os
 from dataclasses import astuple, dataclass, fields
 from math import prod
 
-# Queries per program and warps per program (env HGQ_TRITON_ATTENTION_QUERY_BLOCK, HGQ_TRITON_ATTENTION_WARPS).
+# Queries per program, warps per program and registers per thread (env HGQ_TRITON_ATTENTION_QUERY_BLOCK,
+# HGQ_TRITON_ATTENTION_WARPS, HGQ_TRITON_ATTENTION_MAXNREG; unset, `warps` and `maxnreg` pick them).
 QUERY_BLOCK = int(os.environ.get('HGQ_TRITON_ATTENTION_QUERY_BLOCK', '32'))
-WARPS = int(os.environ.get('HGQ_TRITON_ATTENTION_WARPS', '1'))
+WARPS = int(os.environ.get('HGQ_TRITON_ATTENTION_WARPS', '0'))
+MAXNREG = int(os.environ.get('HGQ_TRITON_ATTENTION_MAXNREG', '0'))
 
 
 @dataclass(frozen=True)
@@ -19,7 +21,8 @@ class AttentionSettings:
     inverse table's input (q_ii) and of the probability quantizer (q_p) and its modes (p), the inverse table's epsilon;
     the defaults stand for the 1-pass kernels, which do not read them. The forms of the context and weight quantizers
     (q_a, q_l) and their other modes; training: the call's mode, whose kernels take the per-call maxima (else every
-    form is 'quantize' and the maxima buffers are (1,), unwritten); a tracing call takes the training kernels."""
+    form is 'quantize' and the maxima buffers are (1,), unwritten); a tracing call takes the training kernels, tracing
+    also the negative flags (else (1,), unwritten)."""
 
     rnd_s: str
     ovf_s: str
@@ -54,6 +57,7 @@ class AttentionSettings:
     ovf_l: str = 'WRAP'
     null_l: bool = False
     training: bool = True
+    tracing: bool = False
 
     def args(self) -> tuple:
         return astuple(self)
@@ -77,13 +81,13 @@ def _form(quantizer, training: bool) -> str:
     return 'round' if training and inner.overflow_mode == 'WRAP' and inner.trainable else 'quantize'
 
 
-def attention_settings(softmax, training: bool) -> AttentionSettings:
-    """`AttentionSettings` of a QFSoftmax that attn.layer admits, for a training call or (``training`` False) an inference
-    one."""
+def attention_settings(softmax, training: bool, tracing: bool = False) -> AttentionSettings:
+    """`AttentionSettings` of a QFSoftmax that attn.layer admits, for a training (or ``tracing``) call or (``training``
+    False) an inference one."""
     table = softmax.exp_table
     (rnd_a, ovf_a, null_a), (rnd_l, ovf_l, null_l) = (_modes(q) for q in (softmax.aq, softmax.lq))
     context = dict(q_a=_form(softmax.aq, training), ovf_a=ovf_a, null_a=null_a, q_l=_form(softmax.lq, training))
-    context |= dict(ovf_l=ovf_l, null_l=null_l, training=training)
+    context |= dict(ovf_l=ovf_l, null_l=null_l, training=training, tracing=tracing)
     two_pass = {}
     if softmax.impl == '2pass':
         from keras.config import epsilon
@@ -104,12 +108,13 @@ def query_block(queries: int, block: int | None) -> int:
 
 def maxima_shapes(query_shape, key_shape, value_shape, settings: AttentionSettings) -> tuple:
     """attn_fwd's int32 maxima buffers (context, held, served, rounded) and negative flags, zero at launch; each (1,),
-    unwritten, in an inference call."""
+    unwritten, in an inference call (the flags also in a training one)."""
     heads, rounds, lanes = query_shape[2], key_shape[1], value_shape[-1]
     if not settings.training:
         return ((1,),) * 5
     served = (rounds, heads) if settings.two_pass else (1,)
-    return (2 * rounds, heads, lanes), (rounds, heads), served, (2, heads), (5, heads, lanes)
+    negative = (5, heads, lanes) if settings.tracing else (1,)
+    return (2 * rounds, heads, lanes), (rounds, heads), served, (2, heads), negative
 
 
 def kernel_dims(query_shape, key_shape, value_shape, n_shape, qp_shape, block: int) -> dict[str, int]:
@@ -120,3 +125,20 @@ def kernel_dims(query_shape, key_shape, value_shape, n_shape, qp_shape, block: i
         B=batch, T=queries, S=key_shape[1], H=heads, DK=depth, DV=value_shape[-1], NB=queries // block, W=qp_shape[1],
         NW=prod(n_shape[2:]), TB=block,
     )  # fmt: skip
+
+
+def warps(dims: dict[str, int], backward: bool) -> int:
+    """Warps per program of a kernel of `kernel_dims` ``dims``: `WARPS` if set, else 1, and 4 for the backward past 32
+    values per thread of a (TB, DK or DV) tensor at 1 warp (its live tensors spill there)."""
+    if WARPS:
+        return WARPS
+    return 4 if backward and dims['TB'] * max(dims['DK'], dims['DV']) > 1024 else 1
+
+
+def maxnreg(dims: dict[str, int], backward: bool, two_pass: bool) -> int | None:
+    """Register cap per thread of a kernel of `kernel_dims` ``dims``: `MAXNREG` if set, else 96 (2-pass) or 80 (1-pass)
+    for the forward up to 16 values per thread of a (TB, DK or DV) tensor at 1 warp (uncapped: 128 registers, slower),
+    else none."""
+    if MAXNREG:
+        return MAXNREG
+    return None if backward or dims['TB'] * max(dims['DK'], dims['DV']) > 512 else 96 if two_pass else 80

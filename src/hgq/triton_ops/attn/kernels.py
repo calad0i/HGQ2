@@ -22,16 +22,19 @@ the rounds again from the final (m, l): P = Qp(where(valid, E(where(valid, m - s
 (device.inv_table, its input quantizer Qi stateless or a trainable-WRAP rounding) and Qp the probability quantizer
 (likewise), then a = Qa(where(valid, o, 0)), b = Qa(P v_j), o' = where(valid, a + b, o); the maxima of |a|, |b| and |P|
 feed the replay, and rounds from n on see 0 in every call; so does each program's maximum of |Qi(l)|, which every round
-of the second pass evaluates. o is the normalized context.
+of the second pass evaluates. o is the normalized context. In training, a = (where(valid, o, 0) * 2^fa) * 2^-fa is
+bitwise Qa's rounding for integer fa: o starts at 0 and adds Qa's outputs, on the grid 2^-fa Z (or +-inf, NaN), which
+the FP32 sum keeps (a sum off it exceeds 2^(24 - fa), where floats are on it), and an integer o * 2^fa rounds to itself
+(or overflows to inf in both); o is never -0.
 
 Quantizers are `quantizers.triton`'s (through qdense.kernels' `_quantize`), the exp table `device`'s; widths are
 tensor operands, modes constexprs: (round, overflow, null_xgrad_on_zero_width) of the score, exp-table, context and
 weight quantizers, the forms ('quantize' or 'round') of Qs, Qa, Ql, Qi and Qp. TRAINING off (an inference call: every
 form 'quantize'), attn_fwd writes o and l only.
 
-TRAINING (a training or tracing call) also flags, per head (and value lane for Qa), whether any output of Qa, Ql, Qs,
-Qp and Qi was negative over the calls, the tracing call's k update: each program ORs its own and atomically maxes them
-into the int32 ``negative`` buffer (`_any`).
+TRACING (a tracing call, with TRAINING) also flags, per head (and value lane for Qa), whether any output of Qa, Ql,
+Qs, Qp and Qi was negative over the calls, the tracing call's k update: each program ORs its own and atomically maxes
+them into the int32 ``negative`` buffer (`_any`).
 
 The maxima buffers are int32 views of float32, zero at launch, per (call, head[, value lane]); each program atomically
 maxes its block's maxima in: the values are |x| >= 0 (or NaN), whose int32 bit patterns order as the floats do (NaN
@@ -124,7 +127,7 @@ def attn_fwd(
     held_ptr,  # in-out int32 (S, H) per round max |c|
     served_ptr,  # in-out int32 (S, H) 2-pass: per round max |P| (else unused)
     rounded_ptr,  # in-out int32 (2, H) max |s| over the queries and keys; 2-pass, max |Qi(l)| over the queries
-    negative_ptr,  # in-out int32 (5, H, DV) any Qa output negative (per lane), then (lane 0) any Ql, Qs, Qp, Qi one
+    negative_ptr,  # in-out int32 (5, H, DV) tracing: any Qa output negative (per lane), then (lane 0) any Ql, Qs, Qp, Qi
     o_ptr,  # out (after every input, as jax_triton passes outputs) (B, T, H, DV) context accumulator o
     l_ptr,  # out (B, T, H) weight accumulator l
     B: tl.constexpr,
@@ -169,6 +172,7 @@ def attn_fwd(
     OVF_L: tl.constexpr,
     NULL_L: tl.constexpr,
     TRAINING: tl.constexpr,
+    TRACING: tl.constexpr,
 ):
     b = tl.program_id(0)
     h = tl.program_id(1)
@@ -233,9 +237,10 @@ def attn_fwd(
     o = tl.zeros((TB, DV), tl.float32)
     l = tl.zeros((TB,), tl.float32)
     scored = tl.zeros((TB,), tl.float32)
-    neg_s = tl.zeros((TB,), tl.int1)
-    neg_c = tl.zeros((TB,), tl.int1)
-    neg_a = tl.zeros((TB, DV), tl.int1)
+    if TRACING:
+        neg_s = tl.zeros((TB,), tl.int1)
+        neg_c = tl.zeros((TB,), tl.int1)
+        neg_a = tl.zeros((TB, DV), tl.int1)
     kept_base = context_ptr + h * sxh + dv
     added_base = kept_base + H * DV
     held_base = held_ptr + h
@@ -244,7 +249,8 @@ def attn_fwd(
         raw = tl.sum(q * tl.load(k_base + j * sks)[None, :], axis=1)
         s = _quantize(tl.where(valid, raw, 0.0), ks, i_s, fs, Q_S, RND_S, OVF_S, NULL_S)
         scored = tl.maximum(scored, tl.abs(s), propagate_nan=tl.PropagateNan.ALL)
-        neg_s = neg_s | (s < 0)
+        if TRACING:
+            neg_s = neg_s | (s < 0)
         next_m = tl.where(valid, tl.maximum(m, s, propagate_nan=tl.PropagateNan.ALL), m)
         r = exp_table(next_m - m, sc, ke, ie, fe, ko, io, fo, RND_EI, OVF_EI, NULL_EI, RND_EO, OVF_EO, NULL_EO)
         p = exp_table(
@@ -255,6 +261,7 @@ def attn_fwd(
             c = _quantize(tl.where(valid, r * l, 0.0), kl, il, fl, Q_L, RND_L, OVF_L, NULL_L)
             if TRAINING:
                 _amax(held_base + j * sys, tl.max(tl.abs(c), axis=0))
+            if TRACING:
                 neg_c = neg_c | (c < 0)
         else:
             vj = tl.load(v_base + j * svs)
@@ -265,6 +272,7 @@ def attn_fwd(
                 _amax(kept_base + j * sxs, tl.max(tl.abs(a), axis=0))
                 _amax(added_base + j * sxs, tl.max(tl.abs(bq), axis=0))
                 _amax(held_base + j * sys, tl.max(tl.abs(c), axis=0))
+            if TRACING:
                 neg_a = neg_a | (a < 0) | (bq < 0)
                 neg_c = neg_c | (c < 0)
             o = tl.where(valid[:, None], a + bq, o)
@@ -282,20 +290,27 @@ def attn_fwd(
         if TRAINING:
             lq = _quantize(l, ki, ii, fi, Q_II, RND_II, OVF_II, NULL_II)
             _amax(rounded_ptr + H + h, tl.max(tl.abs(lq), axis=0))
+        if TRACING:
             _any(negative_ptr + (4 * H + h) * DV, lq < 0)
-        neg_p = tl.zeros((TB,), tl.int1)
+            neg_p = tl.zeros((TB,), tl.int1)
         served_base = served_ptr + h
+        if Q_A == 'round':  # see the module docstring
+            scale, unscale = tl.exp2(fa), tl.exp2(-fa)
         for j in range(0, n):
             valid, x, s = _round_scores(q, k_base, sks, valid_base, sms, j, ks, i_s, fs, Q_S, RND_S, OVF_S, NULL_S)
             e = tl.where(valid, m - s, 0.0)
             share = exp_table(e, sc, ke, ie, fe, ko, io, fo, RND_EI, OVF_EI, NULL_EI, RND_EO, OVF_EO, NULL_EO)
             prob = _quantize(tl.where(valid, share * inv, 0.0), kp, ip, fp, Q_P, RND_P, OVF_P, NULL_P)
-            a = _quantize(tl.where(valid[:, None], o, 0.0), ka, ia, fa, Q_A, RND_A, OVF_A, NULL_A)
+            if Q_A == 'round':
+                a = tl.where(valid[:, None], o, 0.0) * scale * unscale
+            else:
+                a = _quantize(tl.where(valid[:, None], o, 0.0), ka, ia, fa, Q_A, RND_A, OVF_A, NULL_A)
             bq = _quantize(prob[:, None] * tl.load(v_base + j * svs)[None, :], ka, ia, fa, Q_A, RND_A, OVF_A, NULL_A)
             if TRAINING:
                 _amax(kept_base + j * sxs, tl.max(tl.abs(a), axis=0))
                 _amax(added_base + j * sxs, tl.max(tl.abs(bq), axis=0))
                 _amax(served_base + j * sys, tl.max(tl.abs(prob), axis=0))
+            if TRACING:
                 neg_a = neg_a | (a < 0) | (bq < 0)
                 neg_p = neg_p | (prob < 0)
             o = tl.where(valid[:, None], a + bq, o)
@@ -315,7 +330,8 @@ def attn_fwd(
                 _amax(added_base + j * sxs, kept)
                 _amax(held_base + j * sys, held)
                 _amax(served_base + j * sys, served)
-            _any(negative_ptr + (3 * H + h) * DV, neg_p)
+            if TRACING:
+                _any(negative_ptr + (3 * H + h) * DV, neg_p)
         else:
             # Rounds from n on keep every state; their quantizer calls see the rescale E(0) and no share.
             quiet = exp_table(
@@ -329,11 +345,13 @@ def attn_fwd(
                 _amax(kept_base + j * sxs, kept)
                 _amax(added_base + j * sxs, added)
                 _amax(held_base + j * sys, held)
-                neg_a = neg_a | (a < 0)
-                neg_c = neg_c | (c < 0)
-        _any(negative_ptr + h * DV + dv, neg_a)
-        _any(negative_ptr + (H + h) * DV, neg_c)
-        _any(negative_ptr + (2 * H + h) * DV, neg_s)
+                if TRACING:
+                    neg_a = neg_a | (a < 0)
+                    neg_c = neg_c | (c < 0)
+        if TRACING:
+            _any(negative_ptr + h * DV + dv, neg_a)
+            _any(negative_ptr + (H + h) * DV, neg_c)
+            _any(negative_ptr + (2 * H + h) * DV, neg_s)
 
 
 @triton.jit
@@ -402,6 +420,7 @@ def attn_bwd(
     OVF_L: tl.constexpr,
     NULL_L: tl.constexpr,
     TRAINING: tl.constexpr,
+    TRACING: tl.constexpr,
 ):
     """Four sweeps over the rounds sharing per-round values through this program's slice of the scratch outputs, with a
     barrier of the program's threads at each of six sync sites. (A) the rescales r_j; (B) reversed, the products R_j of
@@ -528,6 +547,8 @@ def attn_bwd(
         g_inv = tl.zeros((TB,), tl.float32)
         dqp_i = zero
         dqp_f = zero
+        if Q_A == 'round':  # attn_fwd's exact Qa(o) of its replay (the module docstring)
+            scale, unscale = tl.exp2(fa), tl.exp2(-fa)
         for j in range(0, n):
             valid, x, s = _round_scores(q, k_base, sks, valid_base, sms, j, ks, i_s, fs, Q_S, RND_S, OVF_S, NULL_S)
             e = tl.where(valid, m - s, 0.0)
@@ -557,7 +578,11 @@ def attn_bwd(
             dqp_i = dqp_i + tl.sum(dip, axis=0)
             dqp_f = dqp_f + tl.sum(dfp, axis=0)
             df = df + tl.sum(df_kept, axis=0) + tl.sum(df_added, axis=0)
-            o = tl.where(valid[:, None], fixed_round(x_kept, fa, RND_A) + fixed_round(x_added, fa, RND_A), o)
+            if Q_A == 'round':
+                a = x_kept * scale * unscale
+            else:
+                a = fixed_round(x_kept, fa, RND_A)
+            o = tl.where(valid[:, None], a + fixed_round(x_added, fa, RND_A), o)
         g_l, dii_t, dfi_t, dio_t, dfo_t = _inverse_vjp(
             l, qp_ptr + h * sph, EPSILON, g_inv, Q_II, RND_II, OVF_II, NULL_II, RND_IO, OVF_IO, NULL_IO
         )
