@@ -28,7 +28,7 @@ def quantize_scaled(
 def mirror_quantizer(q: Quantizer, v: FVArray) -> FVArray:
     qi: FixedPointQuantizerBase = q.quantizer
     kk, ki, kf = qi.kif
-    shape = (1,) * max(1, len(kk.shape) - v.ndim) + tuple(v.shape)
+    shape = (1,) * (len(kk.shape) - v.ndim) + tuple(v.shape)
     kk = qi.bw_mapper.bw_to_x(kk, shape)
     ki = qi.bw_mapper.bw_to_x(ki, shape)
     kf = qi.bw_mapper.bw_to_x(kf, shape)

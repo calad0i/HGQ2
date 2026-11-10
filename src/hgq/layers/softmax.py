@@ -57,10 +57,8 @@ class QSoftmax(QLayerBaseSingleInput):
         exp_oq_conf = exp_oq_conf or QuantizerConfig('default', 'table')
         inv_oq_conf = inv_oq_conf or QuantizerConfig('default', 'table')
         if not self._allow_heterogeneous_table:
-            inv_iq_conf.config['heterogeneous_axis'] = ()
-            inv_iq_conf.config['homogeneous_axis'] = None
-            exp_iq_conf.config['heterogeneous_axis'] = ()
-            exp_iq_conf.config['homogeneous_axis'] = None
+            inv_iq_conf.config.update(homogeneous_axis=None, heterogeneous_axis=(), bw_mapper=None, pblock=None)
+            exp_iq_conf.config.update(homogeneous_axis=None, heterogeneous_axis=(), bw_mapper=None, pblock=None)
 
         if 'k0' in inv_oq_conf.config:
             inv_oq_conf.config['k0'] = 0

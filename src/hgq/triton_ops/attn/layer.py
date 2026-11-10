@@ -15,7 +15,7 @@ launches the forward kernel only, every quantizer in its quantize form. The kern
 
 Fallback: with the switch on, a call that cannot take the route runs the keras-ops scan, with a warning per
 distinct reason, once, when the gate runs (traced): a configuration the kernels do not reproduce (`applies`), the
-computation not placed on a supported GPU, a replayed quantizer with a bit-width mapper other than DefaultBitwidthMapper or an
+computation not placed on a supported GPU, a replayed quantizer with a bit-width mapper other than an unstrided DefaultBitwidthMapper or an
 integer-bit constraint other than None or MinMax. Errors raised while building or running the kernels propagate.
 
 Placement (`hgq.triton_ops.on_gpu`): torch, the tensor's device. JAX, a concrete operand's devices; inside a trace (jax.jit, the
@@ -143,8 +143,8 @@ def applies(layer, query, key, value, training) -> bool:
         if _kind(q, training) != 'round':
             continue
         mapper, constraint = q.quantizer.bw_mapper, q.quantizer._i.constraint
-        if type(mapper) is not DefaultBitwidthMapper:
-            return _gate(f'{name} bit-width mapper {type(mapper).__name__} (the replay reduces as DefaultBitwidthMapper)')
+        if type(mapper) is not DefaultBitwidthMapper or mapper.strided:
+            return _gate(f'{name} bit-width mapper {type(mapper).__name__} (the replay takes an unstrided DefaultBitwidthMapper)')
         if constraint is not None and type(constraint) is not MinMax:
             return _gate(f'{name} integer-bit constraint {type(constraint).__name__} (the replay takes None or MinMax)')
     if not triton_ops.on_gpu(query):

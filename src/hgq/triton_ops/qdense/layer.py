@@ -92,7 +92,7 @@ def _quantizer_ok(q, rank, training) -> bool:
     iq = q.quantizer
     if type(iq) not in (FixedPointQuantizerKIF, FixedPointQuantizerKBI):
         return _gate(f'quantizer {type(iq).__name__}')
-    if type(iq.bw_mapper) is not DefaultBitwidthMapper:
+    if type(iq.bw_mapper) is not DefaultBitwidthMapper or iq.bw_mapper.strided:
         return _gate('bw mapper')
     if iq._stochastic:
         return _gate('stochastic rounding')

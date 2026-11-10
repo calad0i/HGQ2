@@ -40,8 +40,12 @@ class _QMHA(ReplayOperationBase):
                 )
                 precisions.append(np.broadcast_to(precision[:, 0], (self.op._num_heads, lanes))[head])
         else:
-            stated = (1, *value.shape[:axis], self.op._num_heads, *value.shape[axis:])
-            precisions = [to_np_arr(qi.bw_mapper.bw_to_x(bw, stated)).astype(np.int8)[0].take(head, axis=axis) for bw in qi.kif]
+            stated = (*value.shape[:axis], self.op._num_heads, *value.shape[axis:])
+            kif = qi.kif
+            spread = (1,) * (len(kif[0].shape) - len(stated)) + stated
+            precisions = [
+                to_np_arr(qi.bw_mapper.bw_to_x(bw, spread)).astype(np.int8).reshape(stated).take(head, axis=axis) for bw in kif
+            ]
         return quantize_scaled(
             value,
             *precisions,

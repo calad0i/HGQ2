@@ -85,7 +85,7 @@ class QFSoftmax(QSoftmax):
             place = 'table' if name in ('exp_oq_conf', 'inv_oq_conf') else 'datalane'
             conf = copy(kwargs.get(name) or QuantizerConfig('default', place))
             conf.config = conf.config.copy()
-            conf.config.update(homogeneous_axis=None, bw_mapper=None)
+            conf.config.update(homogeneous_axis=None, bw_mapper=None, pblock=None)
             conf.config['heterogeneous_axis'] = tuple(
                 a for a in (conf.config.get('heterogeneous_axis') or ()) if a in head_axes or name == 'aq_conf' and a in lane_axes
             )

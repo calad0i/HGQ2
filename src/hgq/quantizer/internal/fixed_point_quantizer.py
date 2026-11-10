@@ -1,5 +1,3 @@
-from math import prod
-
 import keras
 import numpy as np
 from keras import ops
@@ -35,18 +33,6 @@ def _updated_i(i, required_i, decay, constraint):
     if constraint is not None:
         required_i = constraint(required_i)
     return ops.stop_gradient(ops.maximum(i - decay, required_i))  # type: ignore
-
-
-def _maybe_checkpointed_call(fn, mapper, inputs, *widths):
-    """Run ``fn(inputs, *widths)`` maybe under ``keras.remat`` if the input shape is dynamic or any width size is smaller than the input size. Saves memory in some cases."""
-
-    def mapped(x, *ws):
-        return fn(x, *(mapper.bw_to_x(w, ops.shape(x)) for w in ws))
-
-    x_shape = tuple(inputs.shape)
-    if None in x_shape or any(prod(w.shape) < prod(x_shape) for w in widths):
-        return keras.remat(mapped)(inputs, *widths)
-    return mapped(inputs, *widths)
 
 
 class FixedPointQuantizerBase(TrainableQuantizerBase):
@@ -161,7 +147,7 @@ class FixedPointQuantizerBase(TrainableQuantizerBase):
         raise NotImplementedError
 
     def call(self, inputs, training=None):  # type: ignore
-        return _maybe_checkpointed_call(self.stateless_quantizer, self.bw_mapper, inputs, *self.kif)
+        return self.stateless_quantizer(inputs, *(self.bw_mapper.bw_to_x(bw, ops.shape(inputs)) for bw in self.kif))
 
 
 class FixedPointQuantizerKBI(FixedPointQuantizerBase):
@@ -307,13 +293,13 @@ class FixedPointQuantizerKBI(FixedPointQuantizerBase):
                     if self._i.constraint is not None:
                         new_i = self._i.constraint(new_i)
                     self._i.assign(new_i)
-                    return _maybe_checkpointed_call(self.stateless_quantizer.round, self.bw_mapper, inputs, self.f)
+                    return self.stateless_quantizer.round(inputs, self.bw_mapper.bw_to_x(self.f, ops.shape(inputs)))
                 else:
                     new_i = ops.stop_gradient(ops.maximum(self.i, new_i))  # type: ignore
                     if self._i.constraint is not None:
                         new_i = self._i.constraint(new_i)
 
-                    rinputs = _maybe_checkpointed_call(self.stateless_quantizer.round, self.bw_mapper, inputs, self.b - new_i)
+                    rinputs = self.stateless_quantizer.round(inputs, self.bw_mapper.bw_to_x(self.b - new_i, ops.shape(inputs)))
                     new_k = self.get_any_k(rinputs) & (self.b > 0)  # type: ignore
                     new_k = ops.cast(ops.cast(self.k, 'bool') | new_k, self._k.dtype)  # type: ignore
                     self._k.assign(new_k)
@@ -426,14 +412,11 @@ class FixedPointQuantizerKIF(FixedPointQuantizerBase):
 
     def call(self, inputs, training=None):  # type: ignore
         if self.overflow_mode == 'WRAP' and self.trainable:
+            f = self.bw_mapper.bw_to_x(self.f, ops.shape(inputs))
             stochastic = self._stochastic and training is True
             if stochastic:
-                # The noise and the rounding share one broadcast f (one width-gradient reduction): plain call.
-                f = self.bw_mapper.bw_to_x(self.f, ops.shape(inputs))
                 inputs = inputs + keras.random.uniform(ops.shape(f), minval=-0.5, maxval=0.5, seed=self.seed_gen) * 2**-f  # type: ignore
-                rinputs = self.stateless_quantizer.round(inputs, f)
-            else:
-                rinputs = _maybe_checkpointed_call(self.stateless_quantizer.round, self.bw_mapper, inputs, self.f)
+            rinputs = self.stateless_quantizer.round(inputs, f)
 
             if training or training == 'tracing':  # noqa: E712, training maybe a special wrapper object
                 _new_i = self.get_minimal_i(rinputs)

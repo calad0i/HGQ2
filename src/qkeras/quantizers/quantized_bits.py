@@ -12,7 +12,7 @@ from quantizers.fixed_point.fixed_point_ops import FixedPointQuantizer
 from hgq.config import QuantizerConfig
 from hgq.constraints import Min, MinMax
 from hgq.quantizer.config import KBIConfig
-from hgq.quantizer.internal import DefaultBitwidthMapper, FixedPointQuantizerKBI
+from hgq.quantizer.internal import FixedPointQuantizerKBI
 from hgq.utils.misc import numbers
 
 from .frozen_quantizer import FrozenFixedPointQuantizer
@@ -111,7 +111,7 @@ class quantized_bits(QuantizerConfig):
             br=br,
             ir=ir,
             i_decay_speed=-1,
-            bw_mapper=DefaultBitwidthMapper(heterogeneous_axis=heterogeneous_axis),
+            heterogeneous_axis=heterogeneous_axis,
             scaler=scaler,
             qnoise_factor=qnoise_factor,
             trainable=self.trainable,
@@ -222,7 +222,7 @@ class quantized_bits(QuantizerConfig):
             keep_negative=self.keep_negative,
             alpha=self.scaler if not self.trainable else 'trainable_po2',
             use_stochastic_rounding='S_RND' in self.config['round_mode'],
-            scale_axis=self.config['bw_mapper'].heterogeneous_axis,  # type: ignore
+            scale_axis=self.config['heterogeneous_axis'],
             qnoise_factor=self.qnoise_factor,
             var_name=None,
             use_ste=True,

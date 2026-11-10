@@ -51,15 +51,13 @@ class QUnaryFunctionLUT(Activation, QLayerBaseSingleInput):
                 if 'k0' in oq_conf.config:
                     oq_conf.config['k0'] = False
             if not allow_heterogeneous_table:
-                oq_conf.config['homogeneous_axis'] = None
-                oq_conf.config['heterogeneous_axis'] = ()
+                oq_conf.config.update(homogeneous_axis=None, heterogeneous_axis=(), bw_mapper=None, pblock=None)
         else:
             self._enable_ebops = False
 
         if enable_iq and not allow_heterogeneous_input:
             iq_conf = iq_conf or QuantizerConfig('default', 'datalane')
-            iq_conf.config['homogeneous_axis'] = None
-            iq_conf.config['heterogeneous_axis'] = ()
+            iq_conf.config.update(homogeneous_axis=None, heterogeneous_axis=(), bw_mapper=None, pblock=None)
 
         super().__init__(
             activation=activation, iq_conf=iq_conf, oq_conf=oq_conf, enable_oq=enable_oq, enable_iq=enable_iq, **kwargs

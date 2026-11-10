@@ -29,6 +29,7 @@ default_q_type = {
 class QuantizerConfigBase(TypedDict):
     homogeneous_axis: Sequence[int] | None
     heterogeneous_axis: Sequence[int] | None
+    pblock: Sequence[int] | None
     bw_mapper: BitwidthMapperBase | None
     trainable: bool
     is_weight: bool
@@ -88,6 +89,7 @@ kbi_weight_default = KBIConfig(
     null_xgrad_on_zero_width=False,
     homogeneous_axis=(),
     heterogeneous_axis=None,
+    pblock=None,
     bw_mapper=None,
     trainable=True,
     is_weight=True,
@@ -108,6 +110,7 @@ kbi_datalane_default = KBIConfig(
     null_xgrad_on_zero_width=False,
     homogeneous_axis=(0,),
     heterogeneous_axis=None,
+    pblock=None,
     bw_mapper=None,
     trainable=True,
     is_weight=False,
@@ -127,6 +130,7 @@ kif_weight_default = KIFConfig(
     null_xgrad_on_zero_width=False,
     homogeneous_axis=(),
     heterogeneous_axis=None,
+    pblock=None,
     bw_mapper=None,
     trainable=True,
     is_weight=True,
@@ -147,6 +151,7 @@ kif_datalane_default = KIFConfig(
     null_xgrad_on_zero_width=False,
     homogeneous_axis=(0,),
     heterogeneous_axis=None,
+    pblock=None,
     bw_mapper=None,
     trainable=True,
     is_weight=False,
@@ -164,6 +169,7 @@ float_weight_default = FloatConfig(
     e0r=None,
     homogeneous_axis=(),
     heterogeneous_axis=None,
+    pblock=None,
     bw_mapper=None,
     trainable=True,
     is_weight=True,
@@ -182,6 +188,7 @@ float_datalane_default = FloatConfig(
     e0r=None,
     homogeneous_axis=None,
     heterogeneous_axis=(),
+    pblock=None,
     bw_mapper=None,
     trainable=True,
     is_weight=False,
@@ -209,6 +216,7 @@ float_bias_default = float_datalane_default.copy()
 kbi_bias_default['homogeneous_axis'] = ()
 kif_bias_default['homogeneous_axis'] = ()
 float_bias_default['homogeneous_axis'] = ()
+float_bias_default['heterogeneous_axis'] = None
 
 default_configs: dict[tuple[str, str], KIFConfig | KBIConfig | FloatConfig] = {
     ('kbi', 'weight'): kbi_weight_default,
@@ -232,6 +240,17 @@ all_quantizer_keys = {k for v in default_configs.values() for k in v.keys()} | {
     'affine',
     'qnoise_factor',
 }
+
+
+_axes_keys = ('heterogeneous_axis', 'homogeneous_axis', 'pblock')
+
+
+def _set_one_axes(kwargs: dict):
+    """Set None the others of heterogeneous_axis, homogeneous_axis and pblock where ``kwargs`` gives one."""
+    given = [k for k in _axes_keys if kwargs.get(k) is not None]
+    assert len(given) <= 1, f'{", ".join(_axes_keys)} are mutually exclusive. Set only one of them.'
+    if given:
+        kwargs.update({k: None for k in _axes_keys if k not in given})
 
 
 def all_quantizer_types():
@@ -263,6 +282,7 @@ class QuantizerConfig(Mapping):
         null_xgrad_on_zero_width: bool = False,
         homogeneous_axis: Sequence[int] | None = None,
         heterogeneous_axis: Sequence[int] | None = None,
+        pblock: Sequence[int] | None = None,
         bw_mapper: BitwidthMapperBase | None = None,
         scaler: numbers | None = None,
         affine: tuple[numbers, numbers] | None = None,
@@ -300,11 +320,13 @@ class QuantizerConfig(Mapping):
         null_xgrad_on_zero_width : bool, optional
             If True, the input gradient is 0 where there are no bits (k + i + f <= 0). No effect on trainable WRAP quantizers in training, by default False
         homogeneous_axis : Sequence[int] | None, optional
-            The axes that are quantized homogeneously. Mutually exclusive with `heterogeneous_axis`. Only used if `bw_mapper` is not set, by default None
+            The axes that are quantized homogeneously. Mutually exclusive with `heterogeneous_axis` and `pblock`. Only used if `bw_mapper` is not set, by default None
         heterogeneous_axis : Sequence[int] | None, optional
-            The axes that are quantized heterogeneously. Mutually exclusive with `homogeneous_axis`. Only used if `bw_mapper` is not set, by default None
+            The axes that are quantized heterogeneously. Mutually exclusive with `homogeneous_axis` and `pblock`. Only used if `bw_mapper` is not set, by default None
+        pblock : Sequence[int] | None, optional
+            The patch size for the heterogeneous quantization can be done (corresponding the the physical PE), one per axis, -1 for one width per element along it. Only used if `bw_mapper` is not set, by default None
         bw_mapper : BitwidthMapperBase | None, optional
-            The bitwidth mapper to be used. Must be a subclass of `BitwidthMapperBase`. If None, the default bitwidth mapper is used with `homogeneous_axis` and `heterogeneous_axis` as arguments, by default None
+            The bitwidth mapper to be used. Must be a subclass of `BitwidthMapperBase`. If None, a `DefaultBitwidthMapper` over `homogeneous_axis`, `heterogeneous_axis` or `pblock` is used, by default None
         scaler : numbers | None, optional
             The scaling factor to be used. If None, no scaling is applied, by default None
         affine : tuple[numbers, numbers] | None, optional
@@ -333,6 +355,7 @@ class QuantizerConfig(Mapping):
         null_xgrad_on_zero_width: bool = False,
         homogeneous_axis: Sequence[int] | None = (0,),
         heterogeneous_axis: Sequence[int] | None = None,
+        pblock: Sequence[int] | None = None,
         bw_mapper: BitwidthMapperBase | None = None,
         scaler: numbers | None = None,
         qnoise_factor: float | None = None,
@@ -369,11 +392,13 @@ class QuantizerConfig(Mapping):
         null_xgrad_on_zero_width : bool, optional
             If True, the input gradient is 0 where there are no bits (k + i + f <= 0). No effect on trainable WRAP quantizers in training, by default False
         homogeneous_axis : Sequence[int] | None, optional
-            The axes that are quantized homogeneously. Mutually exclusive with `heterogeneous_axis`. Only used if `bw_mapper` is not set, by default (0,)
+            The axes that are quantized homogeneously. Mutually exclusive with `heterogeneous_axis` and `pblock`. Only used if `bw_mapper` is not set, by default (0,)
         heterogeneous_axis : Sequence[int] | None, optional
-            The axes that are quantized heterogeneously. Mutually exclusive with `homogeneous_axis`. Only used if `bw_mapper` is not set, by default None
+            The axes that are quantized heterogeneously. Mutually exclusive with `homogeneous_axis` and `pblock`. Only used if `bw_mapper` is not set, by default None
+        pblock : Sequence[int] | None, optional
+            The patch size for the heterogeneous quantization can be done (corresponding the the physical PE), one per axis, -1 for one width per element along it. Only used if `bw_mapper` is not set, by default None
         bw_mapper : BitwidthMapperBase | None, optional
-            The bitwidth mapper to be used. Must be a subclass of `BitwidthMapperBase`. If None, the default bitwidth mapper is used with `homogeneous_axis` and `heterogeneous_axis` as arguments, by default None
+            The bitwidth mapper to be used. Must be a subclass of `BitwidthMapperBase`. If None, a `DefaultBitwidthMapper` over `homogeneous_axis`, `heterogeneous_axis` or `pblock` is used, by default None
         scaler : numbers | None, optional
             The scaling factor to be used. If None, no scaling is applied, by default None
         affine : tuple[numbers, numbers] | None, optional
@@ -400,6 +425,7 @@ class QuantizerConfig(Mapping):
         e0r: Regularizer | None = None,
         homogeneous_axis: Sequence[int] | None = (),
         heterogeneous_axis: Sequence[int] | None = None,
+        pblock: Sequence[int] | None = None,
         bw_mapper: BitwidthMapperBase | None = None,
         scaler: numbers | None = None,
         qnoise_factor: float | None = None,
@@ -432,11 +458,13 @@ class QuantizerConfig(Mapping):
         e0r : Regularizer | None, optional
             Regularizer for the number of exponent bits for the first axis, by default None
         homogeneous_axis : Sequence[int] | None, optional
-            The axes that are quantized homogeneously. Mutually exclusive with `heterogeneous_axis`. Only used if `bw_mapper` is not set, by default ()
+            The axes that are quantized homogeneously. Mutually exclusive with `heterogeneous_axis` and `pblock`. Only used if `bw_mapper` is not set, by default ()
         heterogeneous_axis : Sequence[int] | None, optional
-            The axes that are quantized heterogeneously. Mutually exclusive with `homogeneous_axis`. Only used if `bw_mapper` is not set, by default None
+            The axes that are quantized heterogeneously. Mutually exclusive with `homogeneous_axis` and `pblock`. Only used if `bw_mapper` is not set, by default None
+        pblock : Sequence[int] | None, optional
+            The patch size for the heterogeneous quantization can be done (corresponding the the physical PE), one per axis, -1 for one width per element along it. Only used if `bw_mapper` is not set, by default None
         bw_mapper : BitwidthMapperBase | None, optional
-            The bitwidth mapper to be used. Must be a subclass of `BitwidthMapperBase`. If None, the default bitwidth mapper is used with `homogeneous_axis` and `heterogeneous_axis` as arguments, by default None
+            The bitwidth mapper to be used. Must be a subclass of `BitwidthMapperBase`. If None, a `DefaultBitwidthMapper` over `homogeneous_axis`, `heterogeneous_axis` or `pblock` is used, by default None
         scaler : numbers | None, optional
             The scaling factor to be used. If None, no scaling is applied, by default None
         affine : tuple[numbers, numbers] | None, optional
@@ -500,14 +528,7 @@ class QuantizerConfig(Mapping):
             self.config = {}
             return
 
-        assert kwargs.get('homogeneous_axis') is None or kwargs.get('heterogeneous_axis') is None, (
-            'homogeneous_axis and heterogeneous_axis are mutually exclusive. Set only one of them.'
-        )
-
-        if kwargs.get('homogeneous_axis') is not None:
-            kwargs['heterogeneous_axis'] = None
-        if kwargs.get('heterogeneous_axis') is not None:
-            kwargs['homogeneous_axis'] = None
+        _set_one_axes(kwargs)
 
         config = default_configs.get((q_type, place))
         assert config is not None, f'Default config for ({q_type}, {place}) not found.'
@@ -593,14 +614,7 @@ class QuantizerConfigScope:
             for _place in place:
                 assert (_q_type, _place) in default_configs, f'Default config for ({_q_type}, {_place}) not found.'
 
-        assert kwargs.get('homogeneous_axis') is None or kwargs.get('heterogeneous_axis') is None, (
-            'homogeneous_axis and heterogeneous_axis are mutually exclusive. Set only one of them.'
-        )
-
-        if kwargs.get('homogeneous_axis') is not None:
-            kwargs['heterogeneous_axis'] = None
-        if kwargs.get('heterogeneous_axis') is not None:
-            kwargs['homogeneous_axis'] = None
+        _set_one_axes(kwargs)
 
         i, f, b = kwargs.get('i0', None), kwargs.get('f0', None), kwargs.get('b0', None)
         if sum((i is not None, f is not None, b is not None)) == 2:

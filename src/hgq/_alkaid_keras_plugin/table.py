@@ -23,7 +23,7 @@ def _spread(quantizer: Quantizer, grid: tuple[int, ...]) -> tuple[np.ndarray, np
     """The quantizer's (k, i, f), each spread over one presum ``grid`` the way the layer states it."""
 
     internal: FixedPointQuantizerBase = quantizer.quantizer
-    return tuple(to_np_arr(internal.bw_mapper.bw_to_x(v, (1,) + grid)).astype(np.int32).reshape(grid) for v in internal.kif)  # type: ignore
+    return tuple(to_np_arr(internal.bw_mapper.bw_to_x(v, grid)).astype(np.int32).reshape(grid) for v in internal.kif)  # type: ignore
 
 
 def _entries(op: QEinsumDenseT, low: np.ndarray, high: np.ndarray, step: np.ndarray) -> np.ndarray:

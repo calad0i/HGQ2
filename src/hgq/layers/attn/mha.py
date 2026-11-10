@@ -114,7 +114,7 @@ class QMultiHeadAttention(MultiHeadAttention, QLayerBase):
         if self._softmax_kind != 'comb':
             self._qkv_oq_conf = copy(self._qkvo_oq_conf)
             self._qkv_oq_conf.config = self._qkv_oq_conf.config.copy()
-            self._qkv_oq_conf.config.update(homogeneous_axis=None, bw_mapper=None)
+            self._qkv_oq_conf.config.update(homogeneous_axis=None, bw_mapper=None, pblock=None)
             self._qkv_oq_conf.config['heterogeneous_axis'] = tuple(
                 a for a in self._qkv_oq_conf.config.get('heterogeneous_axis') or () if a in (2, 3, -2, -1)
             )

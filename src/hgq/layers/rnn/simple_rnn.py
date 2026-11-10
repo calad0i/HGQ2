@@ -602,7 +602,7 @@ class QSimpleRNN(QRNN, SimpleRNN):
         self._set_unroll()
 
     def _compute_ebops(self, shape):
-        cell_shape = (1, *shape[1:])
+        cell_shape = (1, *shape[2:])
         ebops = self.cell._compute_ebops(cell_shape) * self.parallelization_factor
         return ebops
 
