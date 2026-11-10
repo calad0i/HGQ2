@@ -30,13 +30,13 @@ def _max(a, b):
 @triton.jit
 def replay_i(
     m_ptr, i_ptr, f_ptr, decay_ptr, lo, hi, out_ptr,
-    CALLS: tl.constexpr, H: tl.constexpr, L: tl.constexpr, HP: tl.constexpr, PER_HEAD: tl.constexpr,
+    CALLS: tl.constexpr, H: tl.constexpr, L: tl.constexpr, HP: tl.constexpr, LP: tl.constexpr, PER_HEAD: tl.constexpr,
     PER_LANE: tl.constexpr, REPEATS: tl.constexpr, CONSTRAINT: tl.constexpr, TRACING: tl.constexpr,
 ):  # fmt: skip
-    """out = the integer bits after the calls, from i. lo, hi: the MinMax bounds (unused for CONSTRAINT 'none'); HP: H
-    rounded up to a power of two."""
+    """out = the integer bits after the calls, from i. lo, hi: the MinMax bounds (unused for CONSTRAINT 'none'); HP, LP:
+    H, L rounded up to powers of two."""
     heads = tl.arange(0, HP)[:, None]
-    lanes = tl.arange(0, L)[None, :]
+    lanes = tl.arange(0, LP)[None, :]
     mask = (heads < H) & (lanes < L)
     e = (heads if PER_HEAD else heads * 0) * (L if PER_LANE else 1) + (lanes if PER_LANE else lanes * 0)
     i = tl.load(i_ptr + e, mask=mask, other=0.0)
@@ -46,9 +46,9 @@ def replay_i(
     for _ in range(CALLS):
         x = tl.load(row, mask=mask, other=0).to(tl.float32, bitcast=True)
         if not PER_LANE:
-            x = tl.broadcast_to(tl.reduce(x, 1, _max, keep_dims=True), (HP, L))
+            x = tl.broadcast_to(tl.reduce(x, 1, _max, keep_dims=True), (HP, LP))
         if not PER_HEAD:
-            x = tl.broadcast_to(tl.reduce(x, 0, _max, keep_dims=True), (HP, L))
+            x = tl.broadcast_to(tl.reduce(x, 0, _max, keep_dims=True), (HP, LP))
         for _r in range(REPEATS):
             if TRACING:
                 i = libdevice.rint(i)  # round_conv: half to even

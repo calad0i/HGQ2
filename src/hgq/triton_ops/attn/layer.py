@@ -15,7 +15,7 @@ launches the forward kernel only, every quantizer in its quantize form. The kern
 
 Fallback: with the switch on, a call that cannot take the route runs the keras-ops scan, with a warning per
 distinct reason, once, when the gate runs (traced): a configuration the kernels do not reproduce (`applies`), the
-computation not placed on a supported GPU, a replayed quantizer with a bit-width mapper other than an unstrided DefaultBitwidthMapper or an
+computation not placed on a supported GPU, a replayed quantizer with a bit-width mapper other than DefaultBitwidthMapper or an
 integer-bit constraint other than None or MinMax. Errors raised while building or running the kernels propagate.
 
 Placement (`hgq.triton_ops.on_gpu`): torch, the tensor's device. JAX, a concrete operand's devices; inside a trace (jax.jit, the
@@ -78,9 +78,10 @@ def _kind(q, training: bool) -> str:
 
 
 def _per_head(q, lanes: int) -> bool:
-    """Bit-width shape (1, heads or 1, 1, ``lanes`` or 1)."""
+    """Bit-width shape (1, heads or tiles of them or 1, 1, 1); the context quantizer's (``lanes`` > 1) also any count on
+    the value lanes (per lane, tiles of them or 1). `_attention` spreads them onto the kernels' layout (`bw_to_x`)."""
     shape = q.quantizer._i.shape
-    return len(shape) == 4 and shape[0] == shape[2] == 1 and shape[3] in (1, lanes)
+    return len(shape) == 4 and shape[0] == shape[2] == 1 and (lanes > 1 or shape[3] == 1)
 
 
 def _gate(reason) -> bool:
@@ -97,12 +98,13 @@ def applies(layer, query, key, value, training) -> bool:
     (the kernel call is not split by batch like the ops around it); the (B, T, heads, hd) projections, attention over T;
     key, query, value-lane and key-depth counts powers of two; in training (and tracing, alike), context and weight
     quantizers rounding, the score quantizer either kind, the exp table's quantizers stateless (`_kind`); in inference,
-    every quantizer a fixed-point one the kernels quantize; bit widths at most per head (and value lane for the
-    context); the exp table without EBOPs. 2-pass also: the inverse table without EBOPs, its output quantizer stateless
-    (training), its input and the probability quantizer either kind, at most per head. In training, the replayed
-    (rounding) quantizers with the default bit-width mapper (the replay kernel reduces as it does) and no or a MinMax
-    integer-bit constraint. Then placement on a supported GPU (`hgq.triton_ops.on_gpu`). Keras' symbolic build (placeholder
-    inputs, no device) runs the keras-ops attention unwarned."""
+    every quantizer a fixed-point one the kernels quantize; bit widths per head, tiled along the heads or shared (the
+    context's also per value lane, tiled along the lanes or shared); the exp table without EBOPs. 2-pass also: the
+    inverse table without EBOPs, its output quantizer stateless (training), its input and the probability quantizer
+    either kind, bit widths per head, tiled or shared. In training, the replayed (rounding) quantizers with the default
+    bit-width mapper (the per-call maxima reduce through it) and no or a MinMax integer-bit constraint. Then placement on
+    a supported GPU (`hgq.triton_ops.on_gpu`). Keras' symbolic build (placeholder inputs, no device) runs the keras-ops
+    attention unwarned."""
     if not triton_ops.enabled('attention') or layer._softmax_kind == 'comb' or layer._fuse != 'none' or in_symbolic_scope():
         return False
     training = training is True or training == 'tracing'
@@ -126,7 +128,7 @@ def applies(layer, query, key, value, training) -> bool:
     if not _kind(table.iq, training) == _kind(table.oq, training) == 'quantize':
         return _gate('exp-table quantizer not a stateless fixed-point quantizer')
     if not (_per_head(softmax.aq, lanes) and all(_per_head(q, 1) for q in (softmax.lq, softmax.iq, table.iq, table.oq))):
-        return _gate('bit widths finer than per head (and value lane for the context quantizer)')
+        return _gate('bit widths on axes other than the heads (and value lanes for the context quantizer)')
     replayed = {'context': softmax.aq, 'weight': softmax.lq, 'score': softmax.iq}
     if softmax.impl == '2pass':
         inv, oq = softmax.inv_table, softmax.oq
@@ -137,14 +139,14 @@ def applies(layer, query, key, value, training) -> bool:
         if 'other' in (_kind(inv.iq, training), _kind(oq, training)):
             return _gate('inverse-table input or probability quantizer neither a stateless nor a trainable KIF WRAP quantizer')
         if not all(_per_head(q, 1) for q in (inv.iq, inv.oq, oq)):
-            return _gate('inverse-table or probability bit widths finer than per head')
+            return _gate('inverse-table or probability bit widths on axes other than the heads')
         replayed |= {'probability': oq, 'inverse-table input': inv.iq}
     for name, q in replayed.items():
         if _kind(q, training) != 'round':
             continue
         mapper, constraint = q.quantizer.bw_mapper, q.quantizer._i.constraint
-        if type(mapper) is not DefaultBitwidthMapper or mapper.strided:
-            return _gate(f'{name} bit-width mapper {type(mapper).__name__} (the replay takes an unstrided DefaultBitwidthMapper)')
+        if type(mapper) is not DefaultBitwidthMapper:
+            return _gate(f'{name} bit-width mapper {type(mapper).__name__} (the replay takes a DefaultBitwidthMapper)')
         if constraint is not None and type(constraint) is not MinMax:
             return _gate(f'{name} integer-bit constraint {type(constraint).__name__} (the replay takes None or MinMax)')
     if not triton_ops.on_gpu(query):
@@ -154,24 +156,26 @@ def applies(layer, query, key, value, training) -> bool:
 
 def _replay(quantizer, maxima, negative, plane: int, tracing: bool, repeats=1):
     """Assign a rounding quantizer the state its training or ``tracing`` calls leave (FixedPointQuantizerKIF.call's
-    transition per call), from the kernel's per-call abs-maxima ``(calls, heads[, lanes])``, each call ``repeats`` times
-    in a row; tracing, the integer bits with decay 0 and k ORed with ``negative[plane]`` (heads, lanes), whether any of
-    the calls' outputs was negative."""
+    transition per call), from the kernel's per-call abs-maxima ``(calls, heads[, lanes])``, each call's reduced to the
+    bit-width shape by the quantizer's mapper (`x_to_bw_absmax`, on the (1, heads, 1, lanes or 1) axes), each call
+    ``repeats`` times in a row; tracing, the integer bits with decay 0 and k ORed with ``negative[plane]`` (heads,
+    lanes), whether any of the calls' outputs was negative, reduced alike."""
     if keras.backend.backend() == 'jax':
         from ..replay.jax_op import replay_integer_bits
     else:
         from ..replay.torch_op import replay_integer_bits
     q = quantizer.quantizer
-    c = q._i.constraint  # None or MinMax (`applies`)
+    c, mapper = q._i.constraint, q.bw_mapper  # None or MinMax, DefaultBitwidthMapper (`applies`)
+    heads, lanes = maxima.shape[1], prod(maxima.shape[2:])
+    bw = tuple(q._i.shape[1::2])  # (heads or tiles or 1, lanes or 1): the replay reads the reduced maxima per element
+    # int32 patterns of non-negative floats: their integer order is the floats' (NaN above inf)
+    maxima = ops.vectorized_map(lambda m: ops.reshape(mapper.x_to_bw_absmax(ops.reshape(m, (1, heads, 1, lanes))), bw), maxima)
     decay = ops.zeros_like(q.i_decay_speed) if tracing else q.i_decay_speed
     i, f, decay, maxima = (ops.stop_gradient(x) for x in (q._i.value, q.f, decay, maxima))
     bounds = None if c is None else (c.min_value, c.max_value)
     q._i.assign(replay_integer_bits(i, maxima, f, decay, bounds=bounds, repeats=repeats, tracing=tracing))
     if tracing:
-        flag = ops.reshape(negative[plane], (1, negative.shape[1], 1, negative.shape[2]))
-        axes = tuple(a for a in (1, 3) if q._k.shape[a] == 1)
-        if axes:
-            flag = ops.amax(flag, axis=axes, keepdims=True)
+        flag = mapper.x_to_bw_absmax(ops.reshape(negative[plane], (1, negative.shape[1], 1, negative.shape[2])))
         q._k.assign(ops.cast(ops.cast(q.k, 'bool') | (flag > 0), q._k.dtype))
 
 
@@ -199,9 +203,13 @@ def _attention(softmax, query, key, value, attention_mask, training):
     quantizers = [softmax.iq, softmax.exp_table.iq, softmax.exp_table.oq, softmax.lq]
     if settings.two_pass:
         quantizers += [softmax.inv_table.iq, softmax.inv_table.oq, softmax.oq]
-    kifs = [ops.broadcast_to(ops.cast(v, 'float32')[0, :, 0, 0], (heads,)) for q in quantizers for v in q.quantizer.kif]
+
+    def kif(q, n):  # q's bit widths (k, i, f) on the kernels' (heads, n) layout, mapped by its bit-width mapper
+        return [q.quantizer.bw_mapper.bw_to_x(ops.cast(v, 'float32'), (1, heads, 1, n))[0, :, 0] for v in q.quantizer.kif]
+
+    kifs = [v[:, 0] for q in quantizers for v in kif(q, 1)]
     qp = ops.stack([*kifs, *[ops.zeros((heads,), 'float32')] * ((24 if settings.two_pass else 16) - len(kifs))], axis=1)
-    akif = ops.stack([ops.broadcast_to(ops.cast(v, 'float32')[0, :, 0, :], (heads, lanes)) for v in softmax.aq.quantizer.kif])
+    akif = ops.stack(kif(softmax.aq, lanes))
 
     if stateful:
         outs = binding.attention(query, key, value, qp, akif, valid, first, n, settings, block)

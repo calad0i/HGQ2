@@ -9,9 +9,9 @@ Fused when all hold (else gated to the keras-ops path):
   the bias may be on any output axes);
 - the input quantizer is enabled and is a fixed-point KIF or KBI quantizer with the default bit-width mapper, no
   scaler / qnoise / affine, deterministic rounding; KBI with trainable WRAP is gated in training and tracing (its
-  update reads the unrounded inputs before rounding); its bit widths, permuted with the input to (G, M, K), are read
-  periodically over each of G, M and K flattened, from their first non-1 axis on (per-tensor, per-channel, per-element
-  with the batch axis homogeneous, ...);
+  update reads the unrounded inputs before rounding); its bit widths, mapped by the mapper over each of G, M and K
+  from their first non-1 axis on and permuted with the input to (G, M, K), are read periodically over each flattened
+  (per-tensor, per-channel, per-element with the batch axis homogeneous, tiled, ...);
 - in training and tracing, with bit widths varying along rows, some dx row tile divides the row period (inference
   needs no backward; differentiating it then raises).
 
@@ -92,7 +92,7 @@ def _quantizer_ok(q, rank, training) -> bool:
     iq = q.quantizer
     if type(iq) not in (FixedPointQuantizerKIF, FixedPointQuantizerKBI):
         return _gate(f'quantizer {type(iq).__name__}')
-    if type(iq.bw_mapper) is not DefaultBitwidthMapper or iq.bw_mapper.strided:
+    if type(iq.bw_mapper) is not DefaultBitwidthMapper:
         return _gate('bw mapper')
     if iq._stochastic:
         return _gate('stochastic rounding')
@@ -120,20 +120,20 @@ def _perm(labels, order):
 
 
 def _kif(q, c, periods, track):
-    """The bit widths (k, i, f) of a `_plan`, permuted to G + M + K and expanded to `_layout`, as (rg, rx, cx) tensors."""
+    """The bit widths (k, i, f) of a `_plan` mapped onto `_layout` by the quantizer's bit-width mapper (tiled, sliced,
+    broadcast), permuted to G + M + K, as (rg, rx, cx) tensors."""
     iq, lay, order = q.quantizer, _layout(q, c), c.G + c.M + c.K
     k, i, f = (iq.f,) * 3 if track else iq.kif
-    bw = (ops.transpose(ops.cast(ops.broadcast_to(v, iq._k.shape), 'float32'), _perm(c.a, order)) for v in (k, i, f))
-    return tuple(ops.reshape(ops.broadcast_to(v, [lay[ch] for ch in order]), periods) for v in bw)
+    bw = (iq.bw_mapper.bw_to_x(ops.cast(v, 'float32'), [lay[ch] for ch in c.a]) for v in (k, i, f))
+    return tuple(ops.reshape(ops.transpose(v, _perm(c.a, order)), periods) for v in bw)
 
 
 def _own(q, c, v):
-    """(rg, rx, cx) abs-max or flags of `_kif`'s layout -> the quantizer's bit-width shape (max over the expanded axes)."""
+    """(rg, rx, cx) abs-max or flags (non-negative) of `_kif`'s layout -> the quantizer's bit-width shape, reduced by its
+    bit-width mapper (`x_to_bw_absmax`)."""
     lay, order = _layout(q, c), c.G + c.M + c.K
     v = ops.transpose(ops.reshape(v, [lay[ch] for ch in order]), _perm(order, c.a))
-    bw = tuple(int(d) for d in q.quantizer._k.shape)
-    expanded = [n for n, ch in enumerate(c.a) if bw[n] != lay[ch]]
-    return ops.max(v, axis=tuple(expanded), keepdims=True) if expanded else v
+    return q.quantizer.bw_mapper.x_to_bw_absmax(v)
 
 
 class _Canon:

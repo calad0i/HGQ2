@@ -8,6 +8,7 @@ import numpy as np
 from keras import ops
 
 from ..quantizer import Quantizer, QuantizerConfig
+from ..quantizer.internal.base import DefaultBitwidthMapper, check_axis
 from .activation import table_ebops
 from .core import QLayerBase, QLayerBaseSingleInput
 from .softmax import QSoftmax
@@ -78,17 +79,13 @@ class QFSoftmax(QSoftmax):
 
         self.impl = impl
         self._configured_axis: int = axis
-        lane_axes = (axis,) if accumulator_shape is None else (-1, len(accumulator_shape) - 1)
-        head_axes = () if accumulator_shape is None else (1, 1 - len(accumulator_shape))
         kwargs.update(iq_conf=iq_conf, lq_conf=lq_conf, aq_conf=aq_conf)
+        # Each quantizer on a DefaultBitwidthMapper of its config's axes; `build` restricts it to the axes it may vary on.
         for name in ('iq_conf', 'oq_conf', 'lq_conf', 'aq_conf', 'exp_iq_conf', 'exp_oq_conf', 'inv_iq_conf', 'inv_oq_conf'):
             place = 'table' if name in ('exp_oq_conf', 'inv_oq_conf') else 'datalane'
             conf = copy(kwargs.get(name) or QuantizerConfig('default', place))
             conf.config = conf.config.copy()
-            conf.config.update(homogeneous_axis=None, bw_mapper=None, pblock=None)
-            conf.config['heterogeneous_axis'] = tuple(
-                a for a in (conf.config.get('heterogeneous_axis') or ()) if a in head_axes or name == 'aq_conf' and a in lane_axes
-            )
+            conf.config['bw_mapper'] = None
             kwargs[name] = conf
         lq_conf = cast(QuantizerConfig, kwargs.pop('lq_conf'))
         aq_conf = cast(QuantizerConfig, kwargs.pop('aq_conf'))
@@ -119,6 +116,13 @@ class QFSoftmax(QSoftmax):
     def build(self, input_shape):
         axis = self.axis if self.axis >= 0 else self.axis + len(input_shape)
         self.axes = (axis,)
+        # Each quantizer keeps its widths apart on the heads, and the context's also on its lanes
+        heads = () if self.accumulator_shape is None else (1,)
+        own = ([self.iq] if self.enable_iq else []) + ([self.oq] if self.enable_oq else [])
+        for q in (*own, self.lq, self.aq, self.exp_table.iq, self.exp_table.oq, self.inv_table.iq, self.inv_table.oq):
+            mapper, kept = q.quantizer.bw_mapper, (*heads, axis) if q is self.aq else heads
+            tiles = {a: p for a, (_, p) in zip(check_axis([a for a, _ in mapper.pblock], len(input_shape)), mapper.pblock)}
+            q.quantizer.bw_mapper = DefaultBitwidthMapper(tuple((a, tiles.get(a, mapper.rest)) for a in kept), 1)
         n = input_shape[axis]
         assert n is not None, f'QFSoftmax needs a known length on the scan axis {axis}, got {input_shape}.'
 
