@@ -71,18 +71,27 @@ def check_axis(axis: Sequence[int], ndim: int):
     return axis
 
 
-def to_pblock(
+def to_sparse_pblock(
     *,
     heterogeneous_axis: Sequence[int] | None = None,
     homogeneous_axis: Sequence[int] | None = None,
-    pblock: Sequence[int] | None = None,
+    pblock: Sequence[int] | Sequence[tuple[int, int]] | dict[int, int] | None = None,
 ) -> tuple[tuple[tuple[int, int], ...], int | None]:
     """Normalize to the (pblock, rest) repr of `DefaultBitwidthMapper`"""
     assert (heterogeneous_axis is not None) + (homogeneous_axis is not None) + (pblock is not None) == 1, (
         'Exactly one of heterogeneous_axis, homogeneous_axis and pblock must be specified.'
     )
     if pblock is not None:
-        return tuple(enumerate(pblock)), None  # no rest: the rank is checked when resolved
+        if isinstance(pblock, dict):
+            spblock = tuple(sorted(pblock.items()))
+        else:
+            assert isinstance(pblock, (list, tuple))
+            if all(isinstance(p, int) for p in pblock):
+                spblock = tuple((-i - 1, int(p)) for i, p in enumerate(pblock[::-1]))  # type: ignore
+            else:
+                assert all(isinstance(p, (list, tuple)) and len(p) == 2 for p in pblock)
+                spblock = tuple((int(a), int(p)) for a, p in pblock)  # type: ignore
+        return spblock, 1
     if heterogeneous_axis is not None:
         return tuple((a, -1) for a in heterogeneous_axis), 1
     if homogeneous_axis is not None:
@@ -96,7 +105,7 @@ class TrainableQuantizerBase(Layer):
     __dummy__ = False
 
     def __init__(self, **kwargs):
-        pblock = to_pblock(
+        pblock = to_sparse_pblock(
             heterogeneous_axis=kwargs.pop('heterogeneous_axis', None),
             homogeneous_axis=kwargs.pop('homogeneous_axis', None),
             pblock=kwargs.pop('pblock', None),
@@ -251,5 +260,5 @@ class DefaultBitwidthMapper(BitwidthMapperBase):
         # compat for < 1.0
         het = config['heterogeneous_axis']
         if het is not None:
-            return cls(*to_pblock(heterogeneous_axis=het))
-        return cls(*to_pblock(homogeneous_axis=config['homogeneous_axis']))
+            return cls(*to_sparse_pblock(heterogeneous_axis=het))
+        return cls(*to_sparse_pblock(homogeneous_axis=config['homogeneous_axis']))
